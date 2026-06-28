@@ -153,6 +153,7 @@ enum required_token {
   RT_PRAGMA_EOL, /* end of line */
   RT_NAME, /* identifier */
   RT_CLOSE_SPLICE, /* ':]' */
+  RT_CLOSE_BACKTICK, /* '`' */
 
   /* The type is CPP_KEYWORD */
   RT_NEW, /* new */
@@ -3384,6 +3385,8 @@ get_required_cpp_ttype (required_token token_desc)
       return CPP_CLOSE_PAREN;
     case RT_CLOSE_SPLICE:
       return CPP_CLOSE_SPLICE;
+    case RT_CLOSE_BACKTICK:
+      return CPP_BACKTICK;
 
     default:
       /* Use CPP_EOF as a "no completions possible" code.  */
@@ -4725,6 +4728,9 @@ cp_parser_new (cp_lexer *lexer)
   /* The `>' token is a greater-than operator, not the end of a
      template-id.  */
   parser->greater_than_is_operator_p = true;
+
+  /* The '`' token is a backtick infix operator delimiter.  */
+  parser->backtick_is_operator_p = true;
 
   parser->default_arg_ok_p = true;
 
@@ -6732,6 +6738,7 @@ cp_parser_primary_expression (cp_parser *parser,
       {
 	cp_expr expr;
 	bool saved_greater_than_is_operator_p;
+	bool saved_backtick_is_operator_p;
 
 	location_t open_paren_loc = token->location;
 
@@ -6743,6 +6750,10 @@ cp_parser_primary_expression (cp_parser *parser,
 	saved_greater_than_is_operator_p
 	  = parser->greater_than_is_operator_p;
 	parser->greater_than_is_operator_p = true;
+	/* Within a parenthesized expression, a '`' token is always
+	   the backtick infix operator (D3: parenthesised nesting).  */
+	saved_backtick_is_operator_p = parser->backtick_is_operator_p;
+	parser->backtick_is_operator_p = true;
 
 	if (cp_lexer_next_token_is (parser->lexer, CPP_ELLIPSIS))
 	  /* Left fold expression. */
@@ -6780,6 +6791,7 @@ cp_parser_primary_expression (cp_parser *parser,
 	   template-parameter-list now.  */
 	parser->greater_than_is_operator_p
 	  = saved_greater_than_is_operator_p;
+	parser->backtick_is_operator_p = saved_backtick_is_operator_p;
 
 	/* Consume the `)'.  */
 	token = cp_lexer_peek_token (parser->lexer);
@@ -8483,6 +8495,9 @@ cp_parser_postfix_expression (cp_parser *parser, bool address_p, bool cast_p,
 	bool saved_greater_than_is_operator_p
 	  = parser->greater_than_is_operator_p;
 	parser->greater_than_is_operator_p = true;
+	bool saved_backtick_is_operator_p_cast
+	  = parser->backtick_is_operator_p;
+	parser->backtick_is_operator_p = true;
 
 	/* And the expression which is being cast.  */
 	matching_parens parens;
@@ -8495,6 +8510,7 @@ cp_parser_postfix_expression (cp_parser *parser, bool address_p, bool cast_p,
 
 	parser->greater_than_is_operator_p
 	  = saved_greater_than_is_operator_p;
+	parser->backtick_is_operator_p = saved_backtick_is_operator_p_cast;
 
 	/* Only type conversions to integral or enumeration types
 	   can be used in constant-expressions.  */
@@ -9346,6 +9362,7 @@ cp_parser_postfix_open_square_expression (cp_parser *parser,
   releasing_vec expression_list = NULL;
   location_t loc = cp_lexer_peek_token (parser->lexer)->location;
   bool saved_greater_than_is_operator_p;
+  bool saved_backtick_is_operator_p;
   bool saved_colon_corrects_to_scope_p;
 
   bool open_splice = cp_lexer_next_token_is (parser->lexer, CPP_OPEN_SPLICE);
@@ -9355,6 +9372,8 @@ cp_parser_postfix_open_square_expression (cp_parser *parser,
 
   saved_greater_than_is_operator_p = parser->greater_than_is_operator_p;
   parser->greater_than_is_operator_p = true;
+  saved_backtick_is_operator_p = parser->backtick_is_operator_p;
+  parser->backtick_is_operator_p = true;
 
   saved_colon_corrects_to_scope_p = parser->colon_corrects_to_scope_p;
   if (parser->omp_array_section_p)
@@ -9444,6 +9463,7 @@ cp_parser_postfix_open_square_expression (cp_parser *parser,
 
 post_colon_parsing:
   parser->greater_than_is_operator_p = saved_greater_than_is_operator_p;
+  parser->backtick_is_operator_p = saved_backtick_is_operator_p;
 
   if (cxx_dialect >= cxx23
       && parser->omp_array_section_p
@@ -9886,6 +9906,7 @@ cp_parser_parenthesized_expression_list (cp_parser* parser,
 {
   vec<tree, va_gc> *expression_list;
   bool saved_greater_than_is_operator_p;
+  bool saved_backtick_is_operator_p;
   bool saved_omp_array_section_p;
 
   /* Assume all the expressions will be constant.  */
@@ -9903,6 +9924,8 @@ cp_parser_parenthesized_expression_list (cp_parser* parser,
   saved_greater_than_is_operator_p
     = parser->greater_than_is_operator_p;
   parser->greater_than_is_operator_p = true;
+  saved_backtick_is_operator_p = parser->backtick_is_operator_p;
+  parser->backtick_is_operator_p = true;
 
   saved_omp_array_section_p = parser->omp_array_section_p;
   parser->omp_array_section_p = false;
@@ -9999,6 +10022,7 @@ cp_parser_parenthesized_expression_list (cp_parser* parser,
 	{
 	  parser->greater_than_is_operator_p
 	    = saved_greater_than_is_operator_p;
+	  parser->backtick_is_operator_p = saved_backtick_is_operator_p;
 	  parser->omp_array_section_p = saved_omp_array_section_p;
 	  return NULL;
 	}
@@ -10006,6 +10030,7 @@ cp_parser_parenthesized_expression_list (cp_parser* parser,
 
   parser->greater_than_is_operator_p
     = saved_greater_than_is_operator_p;
+  parser->backtick_is_operator_p = saved_backtick_is_operator_p;
   parser->omp_array_section_p = saved_omp_array_section_p;
 
   return expression_list;
@@ -10473,6 +10498,7 @@ cp_parser_unary_expression (cp_parser *parser, cp_id_kind * pidk,
 	    bool saved_integral_constant_expression_p;
 	    bool saved_non_integral_constant_expression_p;
 	    bool saved_greater_than_is_operator_p;
+	    bool saved_backtick_is_operator_p_noexcept;
 
 	    location_t start_loc = token->location;
 
@@ -10493,6 +10519,8 @@ cp_parser_unary_expression (cp_parser *parser, cp_id_kind * pidk,
 	    saved_greater_than_is_operator_p
 	      = parser->greater_than_is_operator_p;
 	    parser->greater_than_is_operator_p = true;
+	    saved_backtick_is_operator_p_noexcept = parser->backtick_is_operator_p;
+	    parser->backtick_is_operator_p = true;
 
 	    ++cp_unevaluated_operand;
 	    ++c_inhibit_evaluation_warnings;
@@ -10504,6 +10532,7 @@ cp_parser_unary_expression (cp_parser *parser, cp_id_kind * pidk,
 
 	    parser->greater_than_is_operator_p
 	      = saved_greater_than_is_operator_p;
+	    parser->backtick_is_operator_p = saved_backtick_is_operator_p_noexcept;
 
 	    parser->integral_constant_expression_p
 	      = saved_integral_constant_expression_p;
@@ -11757,6 +11786,43 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	  && cp_lexer_nth_token_is (parser->lexer, 2, CPP_ELLIPSIS))
 	/* This is a fold-expression; handle it later.  */
 	new_prec = PREC_NOT_OPERATOR;
+
+      /* Backtick infix operator: `x `f` y` desugars to `f(x, y)`.
+	 Highest binary precedence; handled before the precedence table
+	 because CPP_BACKTICK has no entry in binops_by_token.  Skip
+	 when the LHS already has an error (error recovery path).  */
+      if (flag_backtick
+	  && token->type == CPP_BACKTICK
+	  && parser->backtick_is_operator_p
+	  && current.lhs != error_mark_node)
+	{
+	  /* Consume the opening backtick.  */
+	  cp_lexer_consume_token (parser->lexer);
+	  /* Parse the operator slot as an assignment-expression with
+	     backtick disabled so the slot does not consume the closing
+	     backtick.  */
+	  bool saved_backtick_p = parser->backtick_is_operator_p;
+	  parser->backtick_is_operator_p = false;
+	  tree slot = cp_parser_assignment_expression (parser);
+	  parser->backtick_is_operator_p = saved_backtick_p;
+	  /* Require the closing backtick.  */
+	  cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK);
+	  /* Parse the RHS as a cast-expression (Option A: highest binary
+	     precedence; operands are cast-expressions).  */
+	  cp_expr rhs_bt = cp_parser_simple_cast_expression (parser);
+	  /* Build slot(lhs, rhs) with ADL.  */
+	  releasing_vec args;
+	  vec_safe_push (args, (tree) current.lhs);
+	  vec_safe_push (args, (tree) rhs_bt);
+	  current.lhs = finish_call_expr (slot, &args,
+					  /*disallow_virtual=*/false,
+					  /*koenig_p=*/true,
+					  tf_warning_or_error);
+	  current.lhs_type = ERROR_MARK;
+	  /* Loop for left-associativity.  */
+	  token = cp_lexer_peek_token (parser->lexer);
+	  continue;
+	}
 
       /* Popping an entry off the stack means we completed a subexpression:
 	 - either we found a token which is not an operator (`>' where it is not
@@ -19609,6 +19675,8 @@ cp_parser_decltype (cp_parser *parser)
       bool saved_greater_than_is_operator_p
 	= parser->greater_than_is_operator_p;
       parser->greater_than_is_operator_p = true;
+      bool saved_backtick_is_operator_p_decltype = parser->backtick_is_operator_p;
+      parser->backtick_is_operator_p = true;
 
       /* Don't synthesize an implicit template type parameter here.  This
 	 could happen with C++23 code like
@@ -19637,6 +19705,7 @@ cp_parser_decltype (cp_parser *parser)
 	 template-parameter-list now.  */
       parser->greater_than_is_operator_p
 	= saved_greater_than_is_operator_p;
+      parser->backtick_is_operator_p = saved_backtick_is_operator_p_decltype;
 
       /* Restore the old message and the integral constant expression
 	 flags.  */
@@ -38089,6 +38158,9 @@ cp_parser_required_error (cp_parser *parser,
 	    break;
 	  case RT_CLOSE_SPLICE:
 	    gmsgid = G_("expected %<:]%>");
+	    break;
+	  case RT_CLOSE_BACKTICK:
+	    gmsgid = G_("expected %<`%>");
 	    break;
 	  default:
 	    gcc_unreachable ();

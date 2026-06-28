@@ -291,6 +291,13 @@ struct GTY(()) cp_parser {
      this flag is FALSE.  */
   bool greater_than_is_operator_p;
 
+  /* TRUE if the '`' token should be interpreted as the infix backtick
+     operator delimiter.  FALSE while parsing the operator slot (between
+     backticks) so the slot's expression parser does not consume the
+     closing '`'.  Restored to TRUE inside nested parentheses and
+     brackets so D3 parenthesised nesting works.  */
+  bool backtick_is_operator_p;
+
   /* TRUE if default arguments are allowed within a parameter list
      that starts at this point. FALSE if only a gnu extension makes
      them permissible.  */
