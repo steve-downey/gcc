@@ -1772,6 +1772,10 @@ fcanonical-system-headers
 C ObjC C++ ObjC++
 Where shorter, use canonicalized paths to systems headers.
 
+fbacktick
+C++ Var(flag_backtick) Init(0)
+Enable the backtick infix operator and keyword escaping.
+
 fchar8_t
 C++ ObjC++ Var(flag_char8_t) Init(-1)
 Enable the char8_t fundamental type and use it as the type for UTF-8 string
