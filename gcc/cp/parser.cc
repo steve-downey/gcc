@@ -11895,6 +11895,51 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 		  ? TRUTH_NOT_EXPR : ERROR_MARK);
       rhs = cp_parser_simple_cast_expression (parser);
 
+      /* Backtick has highest binary precedence — if a backtick follows the
+	 RHS, consume it (and any chained backticks) before building the
+	 enclosing binary operation.  This ensures `a * b `f` c` yields
+	 a * f(b, c) rather than f(a*b, c).  */
+      {
+	cp_token *bt_tok = cp_lexer_peek_token (parser->lexer);
+	while (flag_backtick
+	       && bt_tok->type == CPP_BACKTICK
+	       && parser->backtick_is_operator_p
+	       && rhs != error_mark_node)
+	  {
+	    location_t bt_open = bt_tok->location;
+	    cp_lexer_consume_token (parser->lexer);
+	    bt_tok = cp_lexer_peek_token (parser->lexer);
+	    if (bt_tok->type == CPP_BACKTICK)
+	      {
+		error_at (bt_tok->location,
+			  "expected expression between %<`%> and %<`%>");
+		cp_lexer_consume_token (parser->lexer);
+		rhs = error_mark_node;
+		break;
+	      }
+	    bool saved_bt = parser->backtick_is_operator_p;
+	    parser->backtick_is_operator_p = false;
+	    tree bt_slot = cp_parser_assignment_expression (parser);
+	    parser->backtick_is_operator_p = saved_bt;
+	    if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
+				   bt_open))
+	      {
+		rhs = error_mark_node;
+		break;
+	      }
+	    cp_expr bt_rhs = cp_parser_simple_cast_expression (parser);
+	    releasing_vec bt_args;
+	    vec_safe_push (bt_args, (tree)rhs);
+	    vec_safe_push (bt_args, (tree)bt_rhs);
+	    rhs = finish_call_expr (bt_slot, &bt_args,
+				   /*disallow_virtual=*/false,
+				   /*koenig_p=*/true,
+				   tf_warning_or_error);
+	    rhs_type = ERROR_MARK;
+	    bt_tok = cp_lexer_peek_token (parser->lexer);
+	  }
+      }
+
       /* Get another operator token.  Look up its precedence to avoid
 	 building a useless (immediately popped) stack entry for common
 	 cases such as 3 + 4 + 5 or 3 * 4 + 5.  */
