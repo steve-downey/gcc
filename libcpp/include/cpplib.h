@@ -115,6 +115,7 @@ class rich_location;
   OP(DOT_STAR,		".*")						\
   OP(REFLECT_OP,	"^^")						\
   OP(ATSIGN,		"@")  /* used in Objective-C */			\
+  OP(BACKTICK,		"`")  /* backtick infix operator */		\
 									\
   TK(NAME,		IDENT)	 /* word */				\
   TK(AT_NAME,		IDENT)	 /* @word - Objective-C */		\
@@ -169,7 +170,7 @@ enum cpp_ttype
   /* Positions in the table.  */
   CPP_LAST_EQ        = CPP_LSHIFT,
   CPP_FIRST_DIGRAPH  = CPP_HASH,
-  CPP_LAST_PUNCTUATOR= CPP_ATSIGN,
+  CPP_LAST_PUNCTUATOR= CPP_BACKTICK,
   CPP_LAST_CPP_OP    = CPP_LESS_EQ
 };
 #undef OP
@@ -460,6 +461,9 @@ struct cpp_options
 
   /* Zero means dollar signs are punctuation.  */
   unsigned char dollars_in_ident;
+
+  /* Nonzero means backtick is the infix-operator token CPP_BACKTICK.  */
+  unsigned char backtick_is_operator;
 
   /* Nonzero means UCNs are accepted in identifiers.  */
   unsigned char extended_identifiers;

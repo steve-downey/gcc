@@ -4416,6 +4416,15 @@ _cpp_lex_direct (cpp_reader *pfile)
       /* @ is a punctuator in Objective-C.  */
     case '@': result->type = CPP_ATSIGN; break;
 
+    case '`':
+      if (CPP_OPTION (pfile, backtick_is_operator))
+	{
+	  result->type = CPP_BACKTICK;
+	  break;
+	}
+      /* Fall through to stray-character (CPP_OTHER) path.  */
+      /* FALLTHROUGH */
+
     default:
       {
 	const uchar *base = --buffer->cur;

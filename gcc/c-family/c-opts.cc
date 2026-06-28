@@ -492,6 +492,10 @@ c_common_handle_option (size_t scode, const char *arg, HOST_WIDE_INT value,
       cpp_opts->dollars_in_ident = value;
       break;
 
+    case OPT_fbacktick:
+      cpp_opts->backtick_is_operator = value;
+      break;
+
     case OPT_fmacro_prefix_map_:
       add_macro_prefix_map (arg);
       break;
