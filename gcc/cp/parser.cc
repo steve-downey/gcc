@@ -3354,6 +3354,8 @@ get_matching_symbol (required_token token_desc)
       return "{";
     case RT_CLOSE_PAREN:
       return "(";
+    case RT_CLOSE_BACKTICK:
+      return "`";
     }
 }
 
@@ -11796,8 +11798,22 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	  && parser->backtick_is_operator_p
 	  && current.lhs != error_mark_node)
 	{
+	  /* Save the opening backtick location so a missing-close diagnostic
+	     can note where the matching open was.  */
+	  location_t open_loc = token->location;
 	  /* Consume the opening backtick.  */
 	  cp_lexer_consume_token (parser->lexer);
+	  /* Empty slot: two consecutive backticks with no expression.  */
+	  cp_token *next = cp_lexer_peek_token (parser->lexer);
+	  if (next->type == CPP_BACKTICK)
+	    {
+	      error_at (next->location,
+		        "expected expression between %<`%> and %<`%>");
+	      cp_lexer_consume_token (parser->lexer);
+	      current.lhs = error_mark_node;
+	      token = cp_lexer_peek_token (parser->lexer);
+	      continue;
+	    }
 	  /* Parse the operator slot as an assignment-expression with
 	     backtick disabled so the slot does not consume the closing
 	     backtick.  */
@@ -11805,8 +11821,15 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	  parser->backtick_is_operator_p = false;
 	  tree slot = cp_parser_assignment_expression (parser);
 	  parser->backtick_is_operator_p = saved_backtick_p;
-	  /* Require the closing backtick.  */
-	  cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK);
+	  /* Require the closing backtick; pass open_loc so that a missing-close
+	     diagnostic notes where the opening backtick was.  */
+	  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
+				  open_loc))
+	    {
+	      current.lhs = error_mark_node;
+	      token = cp_lexer_peek_token (parser->lexer);
+	      continue;
+	    }
 	  /* Parse the RHS as a cast-expression (Option A: highest binary
 	     precedence; operands are cast-expressions).  */
 	  cp_expr rhs_bt = cp_parser_simple_cast_expression (parser);
