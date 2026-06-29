@@ -7206,6 +7206,15 @@ cp_parser_primary_expression (cp_parser *parser,
 	}
       gcc_fallthrough ();
 
+    /* Backtick keyword-escape in primary-expression position: `kw` is
+       an identifier in name positions (G07).  Route to the id-expression
+       path, which calls cp_parser_unqualified_id where the escape is
+       actually parsed.  */
+    case CPP_BACKTICK:
+      if (flag_backtick)
+	goto id_expression;
+      gcc_fallthrough ();
+
       /* Anything else is an error.  */
     default:
       cp_parser_error (parser, "expected primary-expression");
@@ -7376,6 +7385,18 @@ cp_parser_id_expression (cp_parser *parser,
 	  if (token->keyword == RID_OPERATOR)
 	    {
 	      id = cp_parser_operator_function_id (parser);
+	      break;
+	    }
+	  /* Fall through.  */
+
+	case CPP_BACKTICK:
+	  if (flag_backtick && token->type == CPP_BACKTICK)
+	    {
+	      id = cp_parser_unqualified_id (parser,
+					    /*template_keyword_p=*/false,
+					    /*check_dependency_p=*/true,
+					    declarator_p,
+					    optional_p);
 	      break;
 	    }
 	  /* Fall through.  */
@@ -7789,6 +7810,33 @@ cp_parser_unqualified_id (cp_parser* parser,
 	  return id;
 	}
       /* Fall through.  */
+
+    case CPP_BACKTICK:
+      /* Keyword-escape in name position: `kw` -> identifier (G07).
+	 Only actual C++ keywords are accepted inside the escape.  */
+      if (flag_backtick)
+	{
+	  location_t open_loc = token->location;
+	  /* Consume the opening backtick.  */
+	  cp_lexer_consume_token (parser->lexer);
+	  token = cp_lexer_peek_token (parser->lexer);
+	  if (token->type != CPP_KEYWORD)
+	    {
+	      if (!cp_parser_uncommitted_to_tentative_parse_p (parser))
+		error_at (token->location,
+			  "backtick keyword-escape requires a C++ keyword");
+	      cp_parser_simulate_error (parser);
+	      return error_mark_node;
+	    }
+	  tree id = token->u.value;
+	  location_t id_loc = token->location;
+	  cp_lexer_consume_token (parser->lexer);   /* keyword */
+	  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
+				  open_loc))
+	    return error_mark_node;
+	  return cp_expr (id, id_loc);
+	}
+      gcc_fallthrough ();
 
     default:
       if (optional_p)

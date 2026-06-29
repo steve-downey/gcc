@@ -14360,8 +14360,12 @@ grokdeclarator (const cp_declarator *declarator,
 
 		if (IDENTIFIER_KEYWORD_P (dname))
 		  {
-		    error ("declarator-id missing; using reserved word %qD",
-			   dname);
+		    /* Keyword-escaped identifiers (`kw`) are legal declarator
+		       names under -fbacktick (G07).  Without that flag, keep
+		       the existing diagnostic.  */
+		    if (!flag_backtick)
+		      error ("declarator-id missing; using reserved word %qD",
+			     dname);
 		    name = identifier_to_locale (IDENTIFIER_POINTER (dname));
 		  }
 		else if (!IDENTIFIER_CONV_OP_P (dname))
