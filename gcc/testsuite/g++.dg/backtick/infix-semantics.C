@@ -3,11 +3,9 @@
 // G05: semantics test sweep for infix backtick — overload resolution, ADL,
 //      templates, constexpr, value categories, lambda.
 //
-// Note on ADL limitation (DEV-G05): pure-ADL (name only in namespace,
-// invisible to regular lookup) does NOT work because the slot expression
-// is parsed as a standalone expression; name lookup fires before
-// finish_call_expr can apply Koenig.  Qualified names work fine (section 2).
-// Cross-compiler note: Clang S05 also used qualified names for this case.
+// Note: DEV-G05 (ADL limitation) was fixed in G10.  Section 2 below now
+// uses a bare unqualified-id slot to exercise pure ADL.  The qualified-name
+// workaround is retained in a comment for historical reference.
 
 // ---------------------------------------------------------------------------
 // 1. Overload resolution: selects the same overload as f(x, y)
@@ -30,17 +28,14 @@ double r_ovl_dbl = a_d `f_ovl` b_d;
 // { dg-final { scan-tree-dump "f_ovl \\(a_d, b_d\\)" "original" } }
 
 // ---------------------------------------------------------------------------
-// 2. Qualified callee: namespace-qualified name in operator slot.
-//    (Pure ADL — name only in namespace, not in regular scope — does NOT work:
-//     the slot is pre-parsed as an expression, so name lookup fires before
-//     finish_call_expr can apply Koenig.  Documented as DEV-G05.)
+// 2. Pure ADL: name visible only in argument's namespace (DEV-G05 fixed G10).
 // ---------------------------------------------------------------------------
 namespace ns {
   struct T {};
   int g(T, T);
 }
 ns::T tx, ty;
-int r_qual = tx `ns::g` ty;  // qualified callee; no ADL needed
+int r_adl = tx `g` ty;  // g found via ADL on ns::T (bare unqualified-id slot)
 
 // ---------------------------------------------------------------------------
 // 3. Templates: dependent operands instantiate via tsubst of CALL_EXPR.
