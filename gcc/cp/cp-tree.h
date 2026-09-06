@@ -7029,6 +7029,11 @@ struct cp_declarator {
   /* Whether we parsed an ellipsis (`...') just before the declarator,
      to indicate this is a parameter pack.  */
   bool parameter_pack_p : 1;
+  /* Whether the declarator-id was written as a backtick keyword-escape
+     (`kw`).  The escape yields an ordinary identifier, but the keyword bit
+     lives on the shared interned IDENTIFIER_NODE, so the semantic layer
+     cannot tell an escaped name from a bare keyword without being told.  */
+  bool backtick_escaped_p : 1;
   /* If this declarator is parenthesized, this the open-paren.  It is
      UNKNOWN_LOCATION when not parenthesized.  */
   location_t parenthesized;

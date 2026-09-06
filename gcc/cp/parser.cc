@@ -1903,6 +1903,7 @@ make_declarator (cp_declarator_kind kind)
   declarator->std_attributes = NULL_TREE;
   declarator->declarator = NULL;
   declarator->parameter_pack_p = false;
+  declarator->backtick_escaped_p = false;
   declarator->id_loc = UNKNOWN_LOCATION;
   declarator->init_loc = UNKNOWN_LOCATION;
 
@@ -4734,6 +4735,9 @@ cp_parser_new (cp_lexer *lexer)
   /* The '`' token is a backtick infix operator delimiter.  */
   parser->backtick_is_operator_p = true;
 
+  /* No declarator-id has been escaped yet.  */
+  parser->backtick_escaped_id_p = false;
+
   parser->default_arg_ok_p = true;
 
   /* We are not parsing a constant-expression.  */
@@ -7211,7 +7215,10 @@ cp_parser_primary_expression (cp_parser *parser,
        path, which calls cp_parser_unqualified_id where the escape is
        actually parsed.  */
     case CPP_BACKTICK:
-      if (flag_backtick)
+      /* The token type is re-tested because CPP_XOR falls through to here:
+	 a stray '^' is not an escape and must keep the diagnostic it gets
+	 without the flag.  */
+      if (flag_backtick && token->type == CPP_BACKTICK)
 	goto id_expression;
       gcc_fallthrough ();
 
@@ -7813,8 +7820,11 @@ cp_parser_unqualified_id (cp_parser* parser,
 
     case CPP_BACKTICK:
       /* Keyword-escape in name position: `kw` -> identifier (G07).
-	 Only actual C++ keywords are accepted inside the escape.  */
-      if (flag_backtick)
+	 Only actual C++ keywords are accepted inside the escape.  The
+	 token type is re-tested because CPP_KEYWORD falls through to here:
+	 a bare keyword in name position is not an escape and must keep the
+	 diagnostic it gets without the flag.  */
+      if (flag_backtick && token->type == CPP_BACKTICK)
 	{
 	  location_t open_loc = token->location;
 	  /* Consume the opening backtick.  */
@@ -7834,6 +7844,9 @@ cp_parser_unqualified_id (cp_parser* parser,
 	  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
 				  open_loc))
 	    return error_mark_node;
+	  /* Record the escape for cp_parser_direct_declarator; the identifier
+	     itself is the shared keyword node and carries no trace of it.  */
+	  parser->backtick_escaped_id_p = true;
 	  return cp_expr (id, id_loc);
 	}
       gcc_fallthrough ();
@@ -27377,6 +27390,7 @@ cp_parser_direct_declarator (cp_parser* parser,
 	    special_function_kind sfk;
 	    bool abstract_ok;
 	    bool pack_expansion_p = false;
+	    bool escaped_id_p = false;
 	    cp_token *declarator_id_start_token;
 
 	    /* Parse a declarator-id */
@@ -27399,6 +27413,7 @@ cp_parser_direct_declarator (cp_parser* parser,
 	    declarator_id_start_token = cp_lexer_peek_token (parser->lexer);
 	    unqualified_name
 	      = cp_parser_declarator_id (parser, /*optional_p=*/abstract_ok);
+	    escaped_id_p = parser->backtick_escaped_id_p;
 	    qualifying_scope = parser->scope;
 	    if (abstract_ok)
 	      {
@@ -27568,6 +27583,7 @@ cp_parser_direct_declarator (cp_parser* parser,
 	    declarator = make_id_declarator (qualifying_scope,
 					     unqualified_name,
 					     sfk, token->location);
+	    declarator->backtick_escaped_p = escaped_id_p;
 	    declarator->std_attributes = attrs;
 	    declarator->parameter_pack_p = pack_expansion_p;
 
@@ -28185,6 +28201,7 @@ cp_parser_declarator_id (cp_parser* parser, bool optional_p)
        int S<T>::R<T>::i = 3;
 
      will work, too.  */
+  parser->backtick_escaped_id_p = false;
   id = cp_parser_id_expression (parser,
 				/*template_keyword_p=*/false,
 				/*check_dependency_p=*/false,

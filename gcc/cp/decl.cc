@@ -14360,10 +14360,14 @@ grokdeclarator (const cp_declarator *declarator,
 
 		if (IDENTIFIER_KEYWORD_P (dname))
 		  {
-		    /* Keyword-escaped identifiers (`kw`) are legal declarator
-		       names under -fbacktick (G07).  Without that flag, keep
-		       the existing diagnostic.  */
-		    if (!flag_backtick)
+		    /* A keyword is a legal declarator name only when it was
+		       written as a backtick keyword-escape (`kw`), which
+		       yields an ordinary identifier (design doc §12).  The
+		       keyword bit lives on the shared interned node, so the
+		       escape is carried on the declarator; -fbacktick on its
+		       own must not suppress the diagnostic for a bare
+		       keyword.  */
+		    if (!flag_backtick || !id_declarator->backtick_escaped_p)
 		      error ("declarator-id missing; using reserved word %qD",
 			     dname);
 		    name = identifier_to_locale (IDENTIFIER_POINTER (dname));
