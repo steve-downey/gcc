@@ -11787,6 +11787,67 @@ cp_parser_cast_expression (cp_parser *parser, bool address_p, bool cast_p,
  ? PREC_NOT_OPERATOR					     \
  : binops_by_token[token->type].prec)
 
+/* Try to parse the operator slot of a backtick infix operator as a bare
+   template-id — the tokens `f<...>` immediately followed by the closing
+   backtick.  On success the tokens are consumed and a TEMPLATE_ID_EXPR is
+   returned whose first operand is the ordinary-lookup result, or the bare
+   IDENTIFIER_NODE when ordinary lookup finds nothing, so that the caller can
+   run argument-dependent lookup on it exactly as it does for a bare
+   unqualified-id (design doc §17.4).  On failure nothing is consumed and
+   NULL_TREE is returned; in particular a slot that is a relational
+   expression (`a < b`) still parses as one, because ordinary lookup of the
+   name must find an overload set — or nothing at all — before the
+   template-argument list is even attempted.  */
+
+static tree
+cp_parser_backtick_template_id_slot (cp_parser *parser)
+{
+  if (!cp_lexer_next_token_is (parser->lexer, CPP_NAME)
+      || !cp_lexer_nth_token_is (parser->lexer, 2, CPP_LESS))
+    return NULL_TREE;
+
+  cp_parser_parse_tentatively (parser);
+  tree id = cp_parser_identifier (parser);
+  tree fns = NULL_TREE;
+  tree targs = NULL_TREE;
+  bool got_targs = false;
+  if (id != error_mark_node)
+    {
+      /* Ordinary lookup first, as the postfix-expression path does.  A name
+	 that is visible but is not a function is not a template name, so
+	 `a < b` in the slot must keep parsing as a comparison; a name that is
+	 not visible at all is the pure-ADL case and is allowed through.  */
+      fns = lookup_name (id);
+      if (fns == error_mark_node || (fns && !is_overloaded_fn (fns)))
+	fns = NULL_TREE;
+      else
+	{
+	  /* Consume the '<', parse the template-argument-list and require
+	     the closing '>'.  '>' is not a greater-than operator here, and a
+	     '`' inside a template argument is not the closing delimiter.  */
+	  cp_lexer_consume_token (parser->lexer);
+	  bool saved_greater_p = parser->greater_than_is_operator_p;
+	  bool saved_backtick_p = parser->backtick_is_operator_p;
+	  parser->greater_than_is_operator_p = false;
+	  parser->backtick_is_operator_p = false;
+	  targs = cp_parser_template_argument_list (parser);
+	  parser->backtick_is_operator_p = saved_backtick_p;
+	  parser->greater_than_is_operator_p = saved_greater_p;
+	  got_targs = (targs != error_mark_node
+		       && !cp_parser_error_occurred (parser)
+		       && cp_lexer_next_token_is (parser->lexer, CPP_GREATER));
+	  if (got_targs)
+	    cp_lexer_consume_token (parser->lexer);
+	}
+    }
+  if (!got_targs || !cp_lexer_next_token_is (parser->lexer, CPP_BACKTICK))
+    cp_parser_simulate_error (parser);
+  if (!cp_parser_parse_definitely (parser))
+    return NULL_TREE;
+
+  return lookup_template_function (fns ? fns : id, targs);
+}
+
 static cp_expr
 cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 			     bool no_toplevel_fold_p,
@@ -11865,16 +11926,23 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	  /* Parse the operator slot.  For a bare unqualified-id (CPP_NAME
 	     immediately followed by the closing CPP_BACKTICK), keep it as an
 	     IDENTIFIER_NODE so Koenig lookup can add ADL candidates from the
-	     operands' associated namespaces (§17.4; fixes DEV-G05).  All other
-	     slot forms — qualified names, member access, lambdas, arbitrary D4
-	     expressions — parse as assignment-expression as before.  */
+	     operands' associated namespaces (§17.4).  A bare template-id
+	     (`f<...>` immediately followed by the close) is kept unresolved
+	     the same way, as a TEMPLATE_ID_EXPR.  All other slot forms —
+	     qualified names, member access, lambdas, arbitrary expressions —
+	     parse as assignment-expression as before.  */
 	  tree slot;
-	  bool slot_is_bare_id = false;
+	  bool slot_wants_adl = false;
 	  if (cp_lexer_peek_token (parser->lexer)->type == CPP_NAME
 	      && cp_lexer_nth_token_is (parser->lexer, 2, CPP_BACKTICK))
 	    {
 	      slot = cp_parser_identifier (parser);
-	      slot_is_bare_id = (slot != error_mark_node);
+	      slot_wants_adl = (slot != error_mark_node);
+	    }
+	  else if (tree tid = cp_parser_backtick_template_id_slot (parser))
+	    {
+	      slot = tid;
+	      slot_wants_adl = (slot != error_mark_node);
 	    }
 	  else
 	    {
@@ -11901,12 +11969,19 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	  vec_safe_push (args, (tree) rhs_bt);
 	  /* For a bare-id slot, do ordinary lookup then Koenig augmentation,
 	     mirroring cp_parser_postfix_expression (§17.4; DEV-G05 fix).  */
-	  if (slot_is_bare_id && !any_type_dependent_arguments_p (args))
+	  if (slot_wants_adl && !any_type_dependent_arguments_p (args))
 	    {
-	      tree fns = lookup_name (slot);
-	      slot = perform_koenig_lookup (fns && fns != error_mark_node
-					    ? fns : slot,
-					    args, tf_warning_or_error);
+	      if (identifier_p (slot))
+		{
+		  tree fns = lookup_name (slot);
+		  slot = perform_koenig_lookup (fns && fns != error_mark_node
+						? fns : slot,
+						args, tf_warning_or_error);
+		}
+	      else
+		/* A template-id slot already carries its ordinary-lookup
+		   result; perform_koenig_lookup augments it.  */
+		slot = perform_koenig_lookup (slot, args, tf_warning_or_error);
 	    }
 	  current.lhs = finish_call_expr (slot, &args,
 					  /*disallow_virtual=*/false,
@@ -11989,12 +12064,17 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 		break;
 	      }
 	    tree bt_slot;
-	    bool bt_slot_is_bare_id = false;
+	    bool bt_slot_wants_adl = false;
 	    if (cp_lexer_peek_token (parser->lexer)->type == CPP_NAME
 		&& cp_lexer_nth_token_is (parser->lexer, 2, CPP_BACKTICK))
 	      {
 		bt_slot = cp_parser_identifier (parser);
-		bt_slot_is_bare_id = (bt_slot != error_mark_node);
+		bt_slot_wants_adl = (bt_slot != error_mark_node);
+	      }
+	    else if (tree tid = cp_parser_backtick_template_id_slot (parser))
+	      {
+		bt_slot = tid;
+		bt_slot_wants_adl = (bt_slot != error_mark_node);
 	      }
 	    else
 	      {
@@ -12013,12 +12093,20 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	    releasing_vec bt_args;
 	    vec_safe_push (bt_args, (tree)rhs);
 	    vec_safe_push (bt_args, (tree)bt_rhs);
-	    if (bt_slot_is_bare_id && !any_type_dependent_arguments_p (bt_args))
+	    if (bt_slot_wants_adl && !any_type_dependent_arguments_p (bt_args))
 	      {
-		tree fns = lookup_name (bt_slot);
-		bt_slot = perform_koenig_lookup (fns && fns != error_mark_node
-						 ? fns : bt_slot,
-						 bt_args, tf_warning_or_error);
+		if (identifier_p (bt_slot))
+		  {
+		    tree fns = lookup_name (bt_slot);
+		    bt_slot = perform_koenig_lookup (fns
+						     && fns != error_mark_node
+						     ? fns : bt_slot,
+						     bt_args,
+						     tf_warning_or_error);
+		  }
+		else
+		  bt_slot = perform_koenig_lookup (bt_slot, bt_args,
+						   tf_warning_or_error);
 	      }
 	    rhs = finish_call_expr (bt_slot, &bt_args,
 				   /*disallow_virtual=*/false,
