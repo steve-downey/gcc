@@ -291,6 +291,13 @@ struct GTY(()) cp_parser {
      this flag is FALSE.  */
   bool greater_than_is_operator_p;
 
+  /* TRUE if the unqualified-id most recently parsed as a declarator-id was
+     written as a backtick keyword-escape (`kw`).  Read immediately after
+     cp_parser_declarator_id and recorded on the declarator, so that
+     grokdeclarator suppresses its keyword-declarator diagnostic only for
+     names that really were escaped.  */
+  bool backtick_escaped_id_p;
+
   /* TRUE if the '`' token should be interpreted as the infix backtick
      operator delimiter.  FALSE while parsing the operator slot (between
      backticks) so the slot's expression parser does not consume the
