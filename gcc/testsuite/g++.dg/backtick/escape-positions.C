@@ -51,3 +51,61 @@ void labelled ()
   if (n++ < 1)
     goto `goto`;
 }
+
+// --- a keyword-escaped name as the *final* component of a qualified type ----
+// The Clang side needed several new parser arms for these; GCC reaches them
+// all out of cp_parser_identifier.  Kept in both suites so a divergence in
+// either direction is caught by a test rather than by a probe sweep.
+namespace `switch` {
+  struct `union` { int a; struct S { int b; }; };
+  struct `while` : `union` { };
+  int `new` = 1;
+}
+`switch`::`union` q0;
+struct `switch`::`union` q1;
+using QA = `switch`::`union`;
+`switch`::`union`::S q2;
+void qparam (`switch`::`union`);
+`switch`::`union` qret ();
+template<class T> struct QW { };
+QW<`switch`::`union`> q3;
+struct QD : `switch`::`union` { QD () : `switch`::`union` () { } };
+int qblock ()
+{
+  `switch`::`union` q4;
+  return sizeof (`switch`::`union`) + static_cast<`switch`::`union`> (q4).a
+	 + `switch`::`new`;
+}
+template<class T> struct QT { typename T::`union` m; };
+QT<`switch`::`union`::S> *qt0;
+
+// --- an escaped class name defined out of line, including its constructor ---
+struct `static` { `static` (); void `new` (); };
+`static`::`static` () { }
+void `static`::`new` () { }
+
+// --- an escape whose keyword is a *type* keyword ----------------------------
+// GCC binds `int' and its siblings at global scope so that code which looks
+// builtin types up by name can find them; nothing written in C++ can name
+// that binding, because `int' is a keyword token, so an escaped declaration
+// is not redeclaring anything.  The keyword still names the builtin in the
+// same translation unit.
+int `int` = 0;
+void `long` () { }
+using `char` = double;
+struct `bool` { int a; };
+template<class T> using `float` = T;
+enum `short` { SA };
+namespace `void` { int x; }
+int type_keywords ()
+{
+  int builtin = 1;			// the keyword still means the type
+  long builtin2 = 2;
+  `bool` v { 3 };
+  `char` d = 1.5;
+  `float`<int> f = 4;
+  `short` e = SA;
+  `long` ();
+  return `int` + builtin + (int) builtin2 + v.a + (int) d + f + (int) e
+	 + `void`::x;
+}
