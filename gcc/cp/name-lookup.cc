@@ -3092,6 +3092,18 @@ update_binding (cp_binding_level *level, cxx_binding *binding, tree *slot,
   tree old_bval = old;
   old = strip_using_decl (old);
 
+  /* An escaped keyword is an identifier, and a keyword can name a
+     declaration only if it was escaped -- grokdeclarator rejects a bare
+     reserved word as a declarator-id.  record_builtin_type binds 'int' and
+     its siblings at global scope only so that code which looks builtin types
+     up by name can find them (its own comment says the bindings should not
+     exist); nothing written in C++ can refer to that binding, because 'int'
+     is a keyword token.  So an escaped declaration is not redeclaring
+     anything: treat the builtin binding as absent, the way an anticipated
+     builtin function is treated above.  */
+  if (flag_backtick && cp_builtin_reserved_type_binding_p (old))
+    old = old_bval = NULL_TREE;
+
   if (DECL_IMPLICIT_TYPEDEF_P (decl))
     {
       /* Pushing an artificial decl.  We should not find another

@@ -7573,6 +7573,7 @@ extern bool maybe_version_functions		(tree, tree);
 extern bool validate_constexpr_redeclaration	(tree, tree);
 extern bool merge_default_template_args		(tree, tree, bool);
 extern void merge_decl_arguments		(tree, tree, bool, bool, bool);
+extern bool cp_builtin_reserved_type_binding_p	(tree);
 extern tree duplicate_decls			(tree, tree,
 						 bool hiding = false,
 						 bool was_hidden = false);

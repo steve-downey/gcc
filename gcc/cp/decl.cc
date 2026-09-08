@@ -1901,6 +1901,23 @@ merge_decl_arguments (tree newdecl, tree olddecl, bool new_defines_function,
     }
 }
 
+/* True if DECL is one of the artificial TYPE_DECLs record_builtin_type
+   binds at global scope under a *keyword* spelling -- 'int', 'char',
+   'bool' and friends.  Those bindings are unreachable from C++ source,
+   which always sees a keyword token there, so a declaration that collides
+   with one can only have come from a backtick keyword-escape.  */
+
+bool
+cp_builtin_reserved_type_binding_p (tree decl)
+{
+  return (decl
+	  && TREE_CODE (decl) == TYPE_DECL
+	  && DECL_ARTIFICIAL (decl)
+	  && DECL_SOURCE_LOCATION (decl) == BUILTINS_LOCATION
+	  && DECL_NAME (decl)
+	  && IDENTIFIER_KEYWORD_P (DECL_NAME (decl)));
+}
+
 /* If NEWDECL is a redeclaration of OLDDECL, merge the declarations.
    If the redeclaration is invalid, a diagnostic is issued, and the
    error_mark_node is returned.  Otherwise, OLDDECL is returned.
@@ -1937,6 +1954,18 @@ duplicate_decls (tree newdecl, tree olddecl, bool hiding, bool was_hidden)
   if (TREE_TYPE (newdecl) == error_mark_node
       || TREE_TYPE (olddecl) == error_mark_node)
     return error_mark_node;
+
+  /* An escaped keyword is an identifier, and in C++ a declaration can be
+     named by a keyword only if it was escaped: grokdeclarator rejects a bare
+     reserved word as a declarator-id.  The builtin type nodes are bound at
+     global scope only so that shared code can look them up by name (see
+     record_builtin_type, whose comment says the bindings should not exist),
+     and nothing in the language can refer to that binding -- 'int' is a
+     keyword token.  So the name is not really taken; let the escaped
+     declaration have it, exactly as an undeclared builtin function below
+     yields to a declaration of another kind.  */
+  if (flag_backtick && cp_builtin_reserved_type_binding_p (olddecl))
+    return NULL_TREE;
 
   /* Check for redeclaration and other discrepancies.  */
   if (TREE_CODE (olddecl) == FUNCTION_DECL
@@ -18464,6 +18493,13 @@ lookup_and_check_tag (enum tag_types tag_code, tree name,
     }
   else
     decl = lookup_elaborated_type (name, how);
+
+  /* A class-head-name or enum-name written as a keyword escape does not
+     refer to the builtin type bound under that keyword's spelling; see
+     cp_builtin_reserved_type_binding_p.  Without this the elaborated-type
+     check below reports `int` as a typedef-name.  */
+  if (flag_backtick && cp_builtin_reserved_type_binding_p (decl))
+    decl = NULL_TREE;
 
   if (!decl)
     /* We found nothing.  */
