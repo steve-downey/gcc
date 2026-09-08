@@ -20,3 +20,17 @@ int stray_xor ()
   return ^;            // { dg-error "expected primary-expression before '\\^' token" }
                        // { dg-error "expected primary-expression before ';' token" "" { target *-*-* } .-1 }
 }
+
+// ---------------------------------------------------------------------------
+// An escaped name is printed escaped.  Under -fbacktick `kw` is the only
+// spelling the name has -- a bare keyword declarator-id is rejected -- so a
+// diagnostic naming the entity `new' spells it with something no program can
+// contain, and text copied out of the diagnostic does not re-parse.
+// ---------------------------------------------------------------------------
+
+void `new` (int);      // { dg-message "initializing argument 1 of 'void `new`\\(int\\)'" }
+
+void escaped_name_is_printed_escaped ()
+{
+  `new` ("x");         // { dg-error "invalid conversion from 'const char\\*' to 'int'" }
+}
