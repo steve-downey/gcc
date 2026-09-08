@@ -3525,13 +3525,19 @@ cp_parser_error_1 (cp_parser* parser, const char* gmsgid,
 							 header_hint));
 	}
 
-  /* Actually emit the error.  */
+  /* Actually emit the error.  A keyword token is printed with %qE below,
+     which reaches the printer that spells an escaped name `kw' under
+     -fbacktick.  What is in hand here is a token and not the name of a
+     declaration -- the program wrote the keyword bare -- so the flag must not
+     change what it is called.  */
+  cp_printing_raw_token = true;
   c_parse_error (gmsgid,
 		 /* Because c_parser_error does not understand
 		    CPP_KEYWORD, keywords are treated like
 		    identifiers.  */
 		 (token->type == CPP_KEYWORD ? CPP_NAME : token->type),
 		 token->u.value, token->flags, &richloc);
+  cp_printing_raw_token = false;
 
   if (missing_token_desc != RT_NONE)
     {

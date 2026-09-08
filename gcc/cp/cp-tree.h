@@ -7783,6 +7783,15 @@ public:
   ~cxx_dump_pretty_printer ();
 };
 
+/* Nonzero while a diagnostic is printing a *raw token* rather than the name
+   of a declared entity.  Under -fbacktick a keyword identifier that names a
+   declaration is printed as the keyword-escape `kw`, which is the only
+   spelling such a name has; a keyword token the program spelled bare must
+   keep the spelling the program used.  The two arrive at dump_decl_name
+   indistinguishable, because the parser hands a keyword token to %qE as if
+   it were a name, so the parser says which it is.  */
+extern bool cp_printing_raw_token;
+
 extern const char *type_as_string		(tree, int);
 extern const char *type_as_string_translate	(tree, int);
 extern const char *decl_as_string		(tree, int);

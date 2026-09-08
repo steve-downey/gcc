@@ -1402,6 +1402,10 @@ public:
   }
 };
 
+/* See cp-tree.h.  Set only around the parser's own error printer, which
+   passes a raw keyword token to %qE as though it were a name.  */
+bool cp_printing_raw_token;
+
 /* Print an IDENTIFIER_NODE that is the name of a declaration.  */
 
 static void
@@ -1427,6 +1431,23 @@ dump_decl_name (cxx_pretty_printer *pp, tree t, int flags)
   if (startswith (str, "_ZGR"))
     {
       pp_cxx_ws_string (pp, "<temporary>");
+      return;
+    }
+
+  /* Under -fbacktick a declaration can only be named by a keyword if it was
+     written as a keyword-escape, `kw`, because grokdeclarator rejects a bare
+     keyword declarator-id.  The escape is then the only spelling the name
+     has, so a diagnostic that calls the entity `new' names it with a spelling
+     no program under the flag can contain, and text copied out of the
+     diagnostic does not re-parse.  Print the escape (design doc §3
+     keyword-escape-printing).  */
+  if (flag_backtick && !cp_printing_raw_token && IDENTIFIER_KEYWORD_P (t))
+    {
+      pp_cxx_maybe_whitespace (pp);
+      pp_string (pp, "`");
+      pp_string (pp, str);
+      pp_string (pp, "`");
+      pp->set_padding (pp_before);
       return;
     }
 
