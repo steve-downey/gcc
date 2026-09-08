@@ -1299,6 +1299,36 @@ cp_lexer_nth_token_is_keyword (cp_lexer* lexer, size_t n, enum rid keyword)
   return cp_lexer_peek_nth_token (lexer, n)->keyword == keyword;
 }
 
+/* True if a name begins at the Nth token ahead (N == 1 being the next
+   token): an ordinary CPP_NAME, or the three tokens of a backtick
+   keyword-escape standing in for one.  [lex.name] lets an escaped-identifier
+   stand wherever the grammar uses identifier as a terminal, so a lookahead
+   predicate that used to test for CPP_NAME asks this instead.  Nothing can
+   be true here that was not true before unless the token stream contains a
+   backtick, which the lexer produces only under -fbacktick.  */
+
+static inline bool
+cp_lexer_nth_token_starts_name (cp_lexer* lexer, size_t n)
+{
+  if (cp_lexer_nth_token_is (lexer, n, CPP_NAME))
+    return true;
+  return (flag_backtick
+	  && cp_lexer_nth_token_is (lexer, n, CPP_BACKTICK)
+	  && cp_lexer_nth_token_is (lexer, n + 1, CPP_KEYWORD)
+	  && cp_lexer_nth_token_is (lexer, n + 2, CPP_BACKTICK));
+}
+
+/* How many tokens the name at the Nth token ahead spans: three for a
+   keyword escape, one otherwise.  A predicate that looked at the token after
+   a name adds this rather than adding one.  */
+
+static inline size_t
+cp_lexer_name_width (cp_lexer* lexer, size_t n)
+{
+  return (flag_backtick
+	  && cp_lexer_nth_token_is (lexer, n, CPP_BACKTICK)) ? 3 : 1;
+}
+
 /* Return true if KEYWORD can start a decl-specifier.  */
 
 bool
@@ -4847,6 +4877,44 @@ cp_parser_pop_lexer (cp_parser *parser)
 
 /* Lexical conventions [gram.lex]  */
 
+/* Parse a backtick keyword-escape, `kw`, and return KW's IDENTIFIER_NODE.
+   The caller has established that flag_backtick is on and that the next
+   token is CPP_BACKTICK.  Returns error_mark_node on failure.
+
+   [lex.name]: an escaped-identifier may appear wherever the grammar uses
+   identifier as a terminal, so this is shared between
+   cp_parser_unqualified_id -- which reaches the escape through the
+   id-expression path -- and cp_parser_identifier, which is where every other
+   name position reads its bare CPP_NAME.  */
+
+static cp_expr
+cp_parser_backtick_escaped_identifier (cp_parser* parser)
+{
+  cp_token *token = cp_lexer_peek_token (parser->lexer);
+  location_t open_loc = token->location;
+
+  /* Consume the opening backtick.  */
+  cp_lexer_consume_token (parser->lexer);
+  token = cp_lexer_peek_token (parser->lexer);
+  if (token->type != CPP_KEYWORD)
+    {
+      if (!cp_parser_uncommitted_to_tentative_parse_p (parser))
+	error_at (token->location,
+		  "backtick keyword-escape requires a C++ keyword");
+      cp_parser_simulate_error (parser);
+      return error_mark_node;
+    }
+  tree id = token->u.value;
+  location_t id_loc = token->location;
+  cp_lexer_consume_token (parser->lexer);   /* keyword */
+  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK, open_loc))
+    return error_mark_node;
+  /* Record the escape for cp_parser_direct_declarator; the identifier
+     itself is the shared keyword node and carries no trace of it.  */
+  parser->backtick_escaped_id_p = true;
+  return cp_expr (id, id_loc);
+}
+
 /* Parse an identifier.  Returns an IDENTIFIER_NODE representing the
    identifier.  */
 
@@ -4854,6 +4922,14 @@ static cp_expr
 cp_parser_identifier (cp_parser* parser)
 {
   cp_token *token;
+
+  /* A keyword escape may stand wherever the grammar writes an identifier.
+     A class-head-name, an enum-name, an enumerator, a namespace-name, a
+     template parameter name, a mem-initializer, a label, and the alias,
+     alias-template and concept names Clang already accepted all read their
+     bare CPP_NAME here, so one arm reaches all of them.  */
+  if (flag_backtick && cp_lexer_next_token_is (parser->lexer, CPP_BACKTICK))
+    return cp_parser_backtick_escaped_identifier (parser);
 
   /* Look for the identifier.  */
   token = cp_parser_require (parser, CPP_NAME, RT_NAME);
@@ -7831,30 +7907,7 @@ cp_parser_unqualified_id (cp_parser* parser,
 	 a bare keyword in name position is not an escape and must keep the
 	 diagnostic it gets without the flag.  */
       if (flag_backtick && token->type == CPP_BACKTICK)
-	{
-	  location_t open_loc = token->location;
-	  /* Consume the opening backtick.  */
-	  cp_lexer_consume_token (parser->lexer);
-	  token = cp_lexer_peek_token (parser->lexer);
-	  if (token->type != CPP_KEYWORD)
-	    {
-	      if (!cp_parser_uncommitted_to_tentative_parse_p (parser))
-		error_at (token->location,
-			  "backtick keyword-escape requires a C++ keyword");
-	      cp_parser_simulate_error (parser);
-	      return error_mark_node;
-	    }
-	  tree id = token->u.value;
-	  location_t id_loc = token->location;
-	  cp_lexer_consume_token (parser->lexer);   /* keyword */
-	  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
-				  open_loc))
-	    return error_mark_node;
-	  /* Record the escape for cp_parser_direct_declarator; the identifier
-	     itself is the shared keyword node and carries no trace of it.  */
-	  parser->backtick_escaped_id_p = true;
-	  return cp_expr (id, id_loc);
-	}
+	return cp_parser_backtick_escaped_identifier (parser);
       gcc_fallthrough ();
 
     default:
@@ -7995,17 +8048,20 @@ cp_parser_nested_name_specifier_opt (cp_parser *parser,
       else
 	{
 	  /* If the next token is not an identifier, then it is
-	     definitely not a type-name or namespace-name.  */
-	  if (token->type != CPP_NAME)
+	     definitely not a type-name or namespace-name.  A keyword escape
+	     stands for one, and is three tokens where it is one.  */
+	  if (!cp_lexer_nth_token_starts_name (parser->lexer, 1))
 	    break;
+	  const size_t nns_name_width = cp_lexer_name_width (parser->lexer, 1);
 	  /* If the following token is neither a `<' (to begin a
 	     template-id), a `...[' (to begin a pack-index-specifier),
 	     nor a `::', then we are not looking at a nested-name-specifier.  */
-	  token = cp_lexer_peek_nth_token (parser->lexer, 2);
+	  token = cp_lexer_peek_nth_token (parser->lexer, 1 + nns_name_width);
 
 	  if (token->type == CPP_COLON
 	      && parser->colon_corrects_to_scope_p
-	      && cp_lexer_peek_nth_token (parser->lexer, 3)->type == CPP_NAME
+	      && cp_lexer_peek_nth_token (parser->lexer,
+					  2 + nns_name_width)->type == CPP_NAME
 	      /* name:name is a valid sequence in an Objective C message.  */
 	      && !parser->objective_c_message_context_p)
 	    {
@@ -8020,10 +8076,11 @@ cp_parser_nested_name_specifier_opt (cp_parser *parser,
 	  if (token->type != CPP_SCOPE
 	      /* See if a pack-index-specifier follows.  */
 	      && !(token->type == CPP_ELLIPSIS
-		   && cp_lexer_peek_nth_token (parser->lexer, 3)->type
+		   && cp_lexer_peek_nth_token (parser->lexer,
+					       2 + nns_name_width)->type
 		      == CPP_OPEN_SQUARE)
 	      && !cp_parser_nth_token_starts_template_argument_list_p
-		  (parser, 2))
+		  (parser, 1 + nns_name_width))
 	    break;
 	}
 
@@ -8424,8 +8481,11 @@ cp_parser_qualifying_entity (cp_parser *parser,
 	 resolution operator, then this is not part of a
 	 nested-name-specifier.  (Note that this function is only used
 	 to parse the components of a nested-name-specifier.)  */
-      if (cp_lexer_next_token_is_not (parser->lexer, CPP_NAME)
-	  || cp_lexer_peek_nth_token (parser->lexer, 2)->type != CPP_SCOPE)
+      if (!cp_lexer_nth_token_starts_name (parser->lexer, 1)
+	  || (cp_lexer_peek_nth_token
+	       (parser->lexer,
+		1 + cp_lexer_name_width (parser->lexer, 1))->type
+	      != CPP_SCOPE))
 	return error_mark_node;
       scope = cp_parser_namespace_name (parser);
     }
@@ -14781,11 +14841,20 @@ cp_parser_statement (cp_parser* parser, tree in_statement_expr,
 	  break;
 	}
     }
-  else if (token->type == CPP_NAME)
+  else if (token->type == CPP_NAME
+	   /* A label may be named by a keyword escape, `try`: ...  Only the
+	      ':' tells that apart from an expression statement beginning
+	      with one, so the whole escape is looked past first and this
+	      disjunct is true for nothing else.  */
+	   || (cp_lexer_nth_token_starts_name (parser->lexer, 1)
+	       && cp_lexer_nth_token_is
+		    (parser->lexer,
+		     1 + cp_lexer_name_width (parser->lexer, 1), CPP_COLON)))
     {
       /* If the next token is a `:', then we are looking at a
 	 labeled-statement.  */
-      token = cp_lexer_peek_nth_token (parser->lexer, 2);
+      token = cp_lexer_peek_nth_token
+		(parser->lexer, 1 + cp_lexer_name_width (parser->lexer, 1));
       if (token->type == CPP_COLON)
 	{
 	  /* Looks like a labeled-statement with an ordinary label.
@@ -15038,10 +15107,12 @@ cp_parser_label_for_labeled_statement (cp_parser* parser, tree attributes)
   tree label = NULL_TREE;
   bool saved_colon_corrects_to_scope_p = parser->colon_corrects_to_scope_p;
 
-  /* The next token should be an identifier.  */
+  /* The next token should be an identifier -- or a keyword escape standing
+     in for one, `try`: ...  */
   token = cp_lexer_peek_token (parser->lexer);
   if (token->type != CPP_NAME
-      && token->type != CPP_KEYWORD)
+      && token->type != CPP_KEYWORD
+      && !cp_lexer_nth_token_starts_name (parser->lexer, 1))
     {
       cp_parser_error (parser, "expected labeled-statement");
       return;
@@ -18113,9 +18184,13 @@ cp_parser_declaration (cp_parser* parser, tree prefix_attrs)
   /* If the next token is `namespace', check for a named or unnamed
      namespace definition.  */
   else if (token1->keyword == RID_NAMESPACE
-	   && (/* A named namespace definition.  */
-	       (token2->type == CPP_NAME
-		&& (cp_lexer_peek_nth_token (parser->lexer, 3)->type
+	   && (/* A named namespace definition.  The name may be a keyword
+		  escape, which is three tokens where an identifier is one:
+		  namespace `new` { }.  */
+	       (cp_lexer_nth_token_starts_name (parser->lexer, 2)
+		&& (cp_lexer_peek_nth_token
+		     (parser->lexer,
+		      2 + cp_lexer_name_width (parser->lexer, 2))->type
 		    != CPP_EQ))
                || (token2->type == CPP_OPEN_SQUARE
                    && cp_lexer_peek_nth_token (parser->lexer, 3)->type
@@ -18290,9 +18365,14 @@ cp_parser_block_declaration (cp_parser *parser,
       /* If the second token after 'using' is '=', then we have an
 	 alias-declaration.  */
       else if (cxx_dialect >= cxx11
-	       && token2->type == CPP_NAME
-	       && ((cp_lexer_peek_nth_token (parser->lexer, 3)->type == CPP_EQ)
-		   || (cp_nth_tokens_can_be_attribute_p (parser, 3))))
+	       && cp_lexer_nth_token_starts_name (parser->lexer, 2)
+	       && ((cp_lexer_peek_nth_token
+		     (parser->lexer,
+		      2 + cp_lexer_name_width (parser->lexer, 2))->type
+		    == CPP_EQ)
+		   || (cp_nth_tokens_can_be_attribute_p
+			(parser,
+			 2 + cp_lexer_name_width (parser->lexer, 2)))))
 	cp_parser_alias_declaration (parser);
       /* Otherwise, it's a using-declaration.  */
       else
@@ -21295,9 +21375,12 @@ cp_parser_template_parameter (cp_parser* parser, bool *is_non_type,
          pack. */
       if (token->type == CPP_ELLIPSIS)
         return cp_parser_type_parameter (parser, is_parameter_pack);
-      /* If it's an identifier, skip it.  */
+      /* If it's an identifier, skip it -- or a keyword escape standing in
+	 for one, which is three tokens rather than one.  */
       if (token->type == CPP_NAME)
 	token = cp_lexer_peek_nth_token (parser->lexer, 3);
+      else if (cp_lexer_nth_token_starts_name (parser->lexer, 2))
+	token = cp_lexer_peek_nth_token (parser->lexer, 5);
       /* Now, see if the token looks like the end of a template
 	 parameter.  */
       if (token->type == CPP_COMMA
@@ -21411,8 +21494,8 @@ cp_parser_type_parameter (cp_parser* parser, bool *is_parameter_pack)
           }
 
 	/* If the next token is an identifier, then it names the
-	   parameter.  */
-	if (cp_lexer_next_token_is (parser->lexer, CPP_NAME))
+	   parameter -- and a keyword escape may stand in for one.  */
+	if (cp_lexer_nth_token_starts_name (parser->lexer, 1))
 	  identifier = cp_parser_identifier (parser);
 	else
 	  identifier = NULL_TREE;
@@ -21589,10 +21672,12 @@ cp_parser_template_id (cp_parser *parser,
   /* Avoid performing name lookup if there is no possibility of
      finding a template-id.  */
   if (!parsed_templ
-      && ((token->type != CPP_NAME && token->keyword != RID_OPERATOR)
-	  || (token->type == CPP_NAME
+      && ((!cp_lexer_nth_token_starts_name (parser->lexer, 1)
+	   && token->keyword != RID_OPERATOR)
+	  || (cp_lexer_nth_token_starts_name (parser->lexer, 1)
 	      && !cp_parser_nth_token_starts_template_argument_list_p
-		   (parser, 2))))
+		   (parser,
+		    1 + cp_lexer_name_width (parser->lexer, 1)))))
     {
       cp_parser_error (parser, "expected template-id");
       return error_mark_node;
@@ -24336,7 +24421,9 @@ cp_parser_enum_specifier (cp_parser* parser)
     }
   else
     {
-      if (cp_lexer_next_token_is (parser->lexer, CPP_NAME))
+      /* enum `union` { }, and the scoped form: the enum-name may be an
+	 escape.  */
+      if (cp_lexer_nth_token_starts_name (parser->lexer, 1))
 	identifier = cp_parser_identifier (parser);
       else
 	{
@@ -24839,7 +24926,8 @@ cp_parser_namespace_definition (cp_parser* parser)
 	  cp_lexer_consume_token (parser->lexer);
 	}
 
-      if (cp_lexer_next_token_is (parser->lexer, CPP_NAME))
+      /* namespace `new` { }: the namespace-name may be an escape.  */
+      if (cp_lexer_nth_token_starts_name (parser->lexer, 1))
 	{
 	  identifier = cp_parser_identifier (parser);
 
@@ -25306,9 +25394,14 @@ cp_parser_alias_declaration (cp_parser* parser)
     return error_mark_node;
 
   id_location = cp_lexer_peek_token (parser->lexer)->location;
+  parser->backtick_escaped_id_p = false;
   id = cp_parser_identifier (parser);
   if (id == error_mark_node)
     return error_mark_node;
+  /* An alias-declaration builds its own declarator rather than going through
+     cp_parser_direct_declarator, so it has to carry the escape itself or
+     grokdeclarator rejects the keyword it yields.  */
+  bool id_escaped_p = parser->backtick_escaped_id_p;
 
   cp_token *attrs_token = cp_lexer_peek_token (parser->lexer);
   attributes = cp_parser_attributes_opt (parser);
@@ -25391,6 +25484,7 @@ cp_parser_alias_declaration (cp_parser* parser)
     return error_mark_node;
 
   declarator = make_id_declarator (NULL_TREE, id, sfk_none, id_location);
+  declarator->backtick_escaped_p = id_escaped_p;
 
   member_p = at_class_scope_p ();
   if (member_p)
@@ -29966,9 +30060,12 @@ cp_parser_class_name (cp_parser *parser,
   tree decl;
   tree identifier = NULL_TREE;
 
-  /* All class-names start with an identifier.  */
+  /* All class-names start with an identifier -- and a keyword escape stands
+     for one.  */
   cp_token *token = cp_lexer_peek_token (parser->lexer);
-  if (token->type != CPP_NAME && token->type != CPP_TEMPLATE_ID)
+  const size_t name_width = cp_lexer_name_width (parser->lexer, 1);
+  if (!cp_lexer_nth_token_starts_name (parser->lexer, 1)
+      && token->type != CPP_TEMPLATE_ID)
     {
       cp_parser_error (parser, "expected class-name");
       return error_mark_node;
@@ -29997,8 +30094,9 @@ cp_parser_class_name (cp_parser *parser,
 			   && dependent_scope_p (parser->scope));
   /* Handle the common case (an identifier, but not a template-id)
      efficiently.  */
-  if (token->type == CPP_NAME
-      && !cp_parser_nth_token_starts_template_argument_list_p (parser, 2))
+  if (cp_lexer_nth_token_starts_name (parser->lexer, 1)
+      && !cp_parser_nth_token_starts_template_argument_list_p
+	    (parser, 1 + name_width))
     {
       cp_token *identifier_token;
       bool ambiguous_p;
@@ -30882,7 +30980,8 @@ cp_parser_class_head (cp_parser* parser,
       /* If that didn't work, it could still be an identifier.  */
       if (!cp_parser_parse_definitely (parser))
 	{
-	  if (cp_lexer_next_token_is (parser->lexer, CPP_NAME))
+	  /* struct `union` { }: the class-head-name may be an escape.  */
+	  if (cp_lexer_nth_token_starts_name (parser->lexer, 1))
 	    {
 	      type_start_token = cp_lexer_peek_token (parser->lexer);
 	      id = cp_parser_identifier (parser);
@@ -36306,7 +36405,7 @@ cp_parser_constructor_declarator_p (cp_parser *parser, cp_parser_flags flags,
     return false;
   /* And only certain tokens can begin a constructor declarator.  */
   next_token = cp_lexer_peek_token (parser->lexer);
-  if (next_token->type != CPP_NAME
+  if (!cp_lexer_nth_token_starts_name (parser->lexer, 1)
       && next_token->type != CPP_SCOPE
       && next_token->type != CPP_NESTED_NAME_SPECIFIER
       && next_token->type != CPP_TEMPLATE_ID)
@@ -36754,7 +36853,7 @@ cp_parser_template_declaration_after_parameters (cp_parser* parser,
     decl = cp_parser_alias_declaration (parser);
   else if (flag_concepts
            && cp_lexer_next_token_is_keyword (parser->lexer, RID_CONCEPT)
-	   && cp_lexer_nth_token_is (parser->lexer, 2, CPP_NAME))
+	   && cp_lexer_nth_token_starts_name (parser->lexer, 2))
     decl = cp_parser_concept_definition (parser);
   else
     {
