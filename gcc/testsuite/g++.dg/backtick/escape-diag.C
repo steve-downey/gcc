@@ -2,8 +2,19 @@
 // { dg-options "-fbacktick" }
 // G07: diagnostics for malformed keyword-escape uses.
 
-// Non-keyword inside escape: error.
-void `x`();   // { dg-error "backtick keyword-escape requires a C\\+\\+ keyword" }
+// Not an identifier inside the escape.  escape-content makes the content
+// rule "any word spelled as an identifier", so what is left to reject is
+// everything that is not a word: a number, punctuation, a literal.  `x` used
+// to be here and is now well-formed; it lives in escape-identifier.C.
+void `3`();   // { dg-error "backtick escape requires an identifier" }
+void `+`();   // { dg-error "backtick escape requires an identifier" }
+void `&&`();  // { dg-error "backtick escape requires an identifier" }
+void `"s"`(); // { dg-error "backtick escape requires an identifier" }
+
+// The two spellings are one identifier: this conflicts only if `clash` and
+// clash are the same name.
+extern int `clash`;  // { dg-message "previous declaration" }
+extern float clash;  // { dg-error "conflicting declaration" }
 
 // ---------------------------------------------------------------------------
 // A bare keyword is not an escape.  -fbacktick must not change what any
