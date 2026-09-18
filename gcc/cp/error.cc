@@ -1440,8 +1440,14 @@ dump_decl_name (cxx_pretty_printer *pp, tree t, int flags)
      has, so a diagnostic that calls the entity `new' names it with a spelling
      no program under the flag can contain, and text copied out of the
      diagnostic does not re-parse.  Print the escape (design doc §3
-     keyword-escape-printing).  */
-  if (flag_backtick && !cp_printing_raw_token && IDENTIFIER_KEYWORD_P (t))
+     keyword-escape-printing).  An alternative token such as 'and' is the
+     same case from the other side: cpplib lexes a bare 'and' as '&&', so a
+     name spelled that way can only have been written escaped and must be
+     printed escaped.  An ordinary identifier written escaped prints bare,
+     because it is an ordinary identifier (escape-content).  */
+  if (flag_backtick && !cp_printing_raw_token
+      && (IDENTIFIER_KEYWORD_P (t)
+	  || (CPP_HASHNODE (GCC_IDENT_TO_HT_IDENT (t))->flags & NODE_OPERATOR)))
     {
       pp_cxx_maybe_whitespace (pp);
       pp_string (pp, "`");

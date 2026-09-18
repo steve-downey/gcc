@@ -30,3 +30,23 @@ void test_both() {
     T `new` = {};             // declaration (prefer-declaration; T names a type)
     (void)`new`.x;            // use the declared variable
 }
+
+// ---------------------------------------------------------------------------
+// 4. The same shapes with a name that is not a keyword (escape-content).
+//    The tentative parse reaches the same verdicts on the wider set, and the
+//    infix operator still wins in post-operand position.
+// ---------------------------------------------------------------------------
+int `ordinary`(int, int);
+
+void test_declaration_ordinary() {
+    T `v`;                    // declaration
+    (void)v.x;                // bare use of the escaped name
+}
+
+void test_expression_ordinary() {
+    `ordinary`(1, 2);         // call
+}
+
+int test_infix_ordinary(int a, int b) {
+    return a `ordinary` b;    // operator, by position
+}

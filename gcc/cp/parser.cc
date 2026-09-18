@@ -1299,9 +1299,27 @@ cp_lexer_nth_token_is_keyword (cp_lexer* lexer, size_t n, enum rid keyword)
   return cp_lexer_peek_nth_token (lexer, n)->keyword == keyword;
 }
 
+/* True if TOKEN is a word spelled as an identifier, which is what a
+   backtick escape may contain: an ordinary CPP_NAME, a CPP_KEYWORD, or an
+   alternative token ([lex.digraph]) such as 'and', which cpplib has already
+   turned into the punctuator it stands for and marked NAMED_OP.  All three
+   are the same thing to the escape, because what it suppresses is the token
+   meaning the language attached to an identifier-shaped word, and an
+   ordinary identifier simply has none to suppress -- so `foobar` *is*
+   foobar (design doc, escape-content).  Punctuation is not a word: '&&'
+   carries no NAMED_OP, so `&&` is rejected while `and` is taken.  */
+
+static inline bool
+cp_token_escapable_word_p (const cp_token *token)
+{
+  return (token->type == CPP_NAME
+	  || token->type == CPP_KEYWORD
+	  || (token->flags & NAMED_OP));
+}
+
 /* True if a name begins at the Nth token ahead (N == 1 being the next
    token): an ordinary CPP_NAME, or the three tokens of a backtick
-   keyword-escape standing in for one.  [lex.name] lets an escaped-identifier
+   escape standing in for one.  [lex.name] lets an escaped-identifier
    stand wherever the grammar uses identifier as a terminal, so a lookahead
    predicate that used to test for CPP_NAME asks this instead.  Nothing can
    be true here that was not true before unless the token stream contains a
@@ -1314,12 +1332,12 @@ cp_lexer_nth_token_starts_name (cp_lexer* lexer, size_t n)
     return true;
   return (flag_backtick
 	  && cp_lexer_nth_token_is (lexer, n, CPP_BACKTICK)
-	  && cp_lexer_nth_token_is (lexer, n + 1, CPP_KEYWORD)
+	  && cp_token_escapable_word_p (cp_lexer_peek_nth_token (lexer, n + 1))
 	  && cp_lexer_nth_token_is (lexer, n + 2, CPP_BACKTICK));
 }
 
 /* How many tokens the name at the Nth token ahead spans: three for a
-   keyword escape, one otherwise.  A predicate that looked at the token after
+   backtick escape, one otherwise.  A predicate that looked at the token after
    a name adds this rather than adding one.  */
 
 static inline size_t
@@ -4877,9 +4895,11 @@ cp_parser_pop_lexer (cp_parser *parser)
 
 /* Lexical conventions [gram.lex]  */
 
-/* Parse a backtick keyword-escape, `kw`, and return KW's IDENTIFIER_NODE.
+/* Parse a backtick escape, `name`, and return NAME's IDENTIFIER_NODE.
    The caller has established that flag_backtick is on and that the next
-   token is CPP_BACKTICK.  Returns error_mark_node on failure.
+   token is CPP_BACKTICK.  Returns error_mark_node on failure.  NAME need not
+   be a keyword: any word cp_token_escapable_word_p accepts may be escaped,
+   and the result is that ordinary identifier (escape-content).
 
    [lex.name]: an escaped-identifier may appear wherever the grammar uses
    identifier as a terminal, so this is shared between
@@ -4896,17 +4916,20 @@ cp_parser_backtick_escaped_identifier (cp_parser* parser)
   /* Consume the opening backtick.  */
   cp_lexer_consume_token (parser->lexer);
   token = cp_lexer_peek_token (parser->lexer);
-  if (token->type != CPP_KEYWORD)
+  if (!cp_token_escapable_word_p (token))
     {
       if (!cp_parser_uncommitted_to_tentative_parse_p (parser))
-	error_at (token->location,
-		  "backtick keyword-escape requires a C++ keyword");
+	error_at (token->location, "backtick escape requires an identifier");
       cp_parser_simulate_error (parser);
       return error_mark_node;
     }
-  tree id = token->u.value;
+  /* An alternative token carries no identifier of its own; its spelling is
+     recovered the way cp_parser_std_attribute recovers an attribute name.  */
+  tree id = ((token->flags & NAMED_OP)
+	     ? get_identifier (cpp_type2name (token->type, token->flags))
+	     : token->u.value);
   location_t id_loc = token->location;
-  cp_lexer_consume_token (parser->lexer);   /* keyword */
+  cp_lexer_consume_token (parser->lexer);   /* the word */
   if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK, open_loc))
     return error_mark_node;
   /* Record the escape for cp_parser_direct_declarator; the identifier
@@ -7901,8 +7924,8 @@ cp_parser_unqualified_id (cp_parser* parser,
       /* Fall through.  */
 
     case CPP_BACKTICK:
-      /* Keyword-escape in name position: `kw` -> identifier (G07).
-	 Only actual C++ keywords are accepted inside the escape.  The
+      /* Backtick escape in name position: `name` -> identifier (G07).
+	 Any identifier-spelled word is accepted inside the escape.  The
 	 token type is re-tested because CPP_KEYWORD falls through to here:
 	 a bare keyword in name position is not an escape and must keep the
 	 diagnostic it gets without the flag.  */
