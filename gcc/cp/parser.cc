@@ -11950,14 +11950,51 @@ cp_parser_backtick_template_id_slot (cp_parser *parser)
   return lookup_template_function (fns ? fns : id, targs);
 }
 
+/* Try to parse the operator slot of a backtick infix operator as a type:
+   a simple-type-specifier, or a typename-specifier, immediately followed by
+   the closing backtick (design doc §17.3).  This is the functional-cast
+   arm of cp_parser_postfix_expression with the closing backtick standing
+   where the '(' stands there, so the type reading wins exactly when lookup
+   finds a type or a class template, and a function hiding a class of the
+   same name leaves the slot an expression.  On success the tokens are
+   consumed and the type is returned; on failure nothing is consumed and
+   NULL_TREE is returned.  */
+
+static tree
+cp_parser_backtick_type_slot (cp_parser *parser)
+{
+  bool saved_backtick_p = parser->backtick_is_operator_p;
+  parser->backtick_is_operator_p = false;
+  cp_parser_parse_tentatively (parser);
+  ++parser->prevent_constrained_type_specifiers;
+  tree type;
+  if (cp_lexer_next_token_is_keyword (parser->lexer, RID_TYPENAME)
+      && !cp_parser_nth_token_starts_splice_without_nns_p (parser, 2))
+    type = cp_parser_elaborated_type_specifier (parser,
+						/*is_friend=*/false,
+						/*is_declaration=*/false);
+  else
+    type = cp_parser_simple_type_specifier (parser,
+					    /*decl_specs=*/NULL,
+					    CP_PARSER_FLAGS_NONE);
+  --parser->prevent_constrained_type_specifiers;
+  parser->backtick_is_operator_p = saved_backtick_p;
+  if (!cp_lexer_next_token_is (parser->lexer, CPP_BACKTICK))
+    cp_parser_simulate_error (parser);
+  if (!cp_parser_parse_definitely (parser))
+    return NULL_TREE;
+  return type;
+}
+
 /* Parse the operator slot of a backtick infix operator: the tokens after
-   the opening backtick, up to but not including the closing one.  *IDK is
-   set as cp_parser_postfix_expression sets it for a callee, so that the
-   call is built with the call's lookup (design doc §17.4).  A bare
-   unqualified-id is parsed as the primary-expression it is in a call, so
-   ordinary lookup happens here, in the definition context, and a name it
-   does not find comes back as an IDENTIFIER_NODE for ADL.  A bare
-   template-id is kept unresolved the same way.  Anything else -- a
+   the opening backtick, up to but not including the closing one.  A slot
+   that is a type comes back as that type, for cp_parser_backtick_call to
+   construct.  Otherwise *IDK is set as cp_parser_postfix_expression sets it
+   for a callee, so that the call is built with the call's lookup (design
+   doc §17.4).  A bare unqualified-id is parsed as the primary-expression it
+   is in a call, so ordinary lookup happens here, in the definition context,
+   and a name it does not find comes back as an IDENTIFIER_NODE for ADL.  A
+   bare template-id is kept unresolved the same way.  Anything else -- a
    qualified name, a parenthesized name, member access, a lambda -- is an
    assignment-expression and gets no ADL, as the equivalent call gets
    none.  */
@@ -11966,17 +12003,23 @@ static cp_expr
 cp_parser_backtick_slot (cp_parser *parser, cp_id_kind *idk)
 {
   *idk = CP_ID_KIND_NONE;
+  /* The template-id arm goes first: it succeeds only for a name that
+     ordinary lookup finds to be functions, or does not find, so it never
+     takes a type, and a failed tentative type parse of `f<...>` would leave
+     the tokens folded into a CPP_TEMPLATE_ID it no longer recognizes.  */
+  if (tree tid = cp_parser_backtick_template_id_slot (parser))
+    {
+      *idk = CP_ID_KIND_TEMPLATE_ID;
+      return tid;
+    }
+  if (tree type = cp_parser_backtick_type_slot (parser))
+    return type;
   if (cp_lexer_next_token_is (parser->lexer, CPP_NAME)
       && cp_lexer_nth_token_is (parser->lexer, 2, CPP_BACKTICK))
     return cp_parser_primary_expression (parser, /*address_p=*/false,
 					 /*cast_p=*/false,
 					 /*template_arg_p=*/false,
 					 /*decltype_p=*/false, idk);
-  if (tree tid = cp_parser_backtick_template_id_slot (parser))
-    {
-      *idk = CP_ID_KIND_TEMPLATE_ID;
-      return tid;
-    }
   bool saved_backtick_p = parser->backtick_is_operator_p;
   parser->backtick_is_operator_p = false;
   cp_expr slot = cp_parser_assignment_expression (parser);
@@ -11984,8 +12027,9 @@ cp_parser_backtick_slot (cp_parser *parser, cp_id_kind *idk)
   return slot;
 }
 
-/* Build the call SLOT (LHS, RHS) that a backtick infix operator desugars
-   to.  IDK is what cp_parser_backtick_slot reported for SLOT.  Whether
+/* Build what a backtick infix operator desugars to: the construction
+   SLOT (LHS, RHS) when SLOT is a type, and otherwise the call SLOT (LHS,
+   RHS).  IDK is what cp_parser_backtick_slot reported for SLOT.  Whether
    argument-dependent lookup applies, and whether it runs now or at
    instantiation, follows cp_parser_postfix_expression exactly: when ordinary
    lookup found a non-function there is no ADL ([basic.lookup.argdep]/3),
@@ -12000,6 +12044,27 @@ cp_parser_backtick_call (cp_expr slot, cp_id_kind idk, cp_expr lhs,
   releasing_vec args;
   vec_safe_push (args, (tree) lhs);
   vec_safe_push (args, (tree) rhs);
+
+  /* A type slot is construction, SLOT (LHS, RHS) as a functional cast, so
+     CTAD, aggregate initialization and dependent construction are the
+     cast's (design doc §17.3).  The placeholder handling is
+     cp_parser_functional_cast's.  */
+  if (slot != error_mark_node
+      && (TYPE_P (slot) || TREE_CODE (slot) == TYPE_DECL))
+    {
+      tree type = slot;
+      if (TREE_CODE (type) == TYPE_DECL && is_auto (TREE_TYPE (type)))
+	type = TREE_TYPE (type);
+      if (is_auto (type)
+	  && !AUTO_IS_DECLTYPE (type)
+	  && !PLACEHOLDER_TYPE_CONSTRAINTS (type)
+	  && !CLASS_PLACEHOLDER_TEMPLATE (type))
+	type = make_cast_auto ();
+      location_t loc = make_location (lhs.get_start (), lhs.get_start (),
+				      rhs.get_finish ());
+      return build_functional_cast (loc, type, build_tree_list_vec (args),
+				    tf_warning_or_error);
+    }
 
   bool koenig_p = false;
   if (slot == error_mark_node)
