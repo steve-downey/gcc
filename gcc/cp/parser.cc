@@ -11950,6 +11950,99 @@ cp_parser_backtick_template_id_slot (cp_parser *parser)
   return lookup_template_function (fns ? fns : id, targs);
 }
 
+/* Parse the operator slot of a backtick infix operator: the tokens after
+   the opening backtick, up to but not including the closing one.  *IDK is
+   set as cp_parser_postfix_expression sets it for a callee, so that the
+   call is built with the call's lookup (design doc §17.4).  A bare
+   unqualified-id is parsed as the primary-expression it is in a call, so
+   ordinary lookup happens here, in the definition context, and a name it
+   does not find comes back as an IDENTIFIER_NODE for ADL.  A bare
+   template-id is kept unresolved the same way.  Anything else -- a
+   qualified name, a parenthesized name, member access, a lambda -- is an
+   assignment-expression and gets no ADL, as the equivalent call gets
+   none.  */
+
+static cp_expr
+cp_parser_backtick_slot (cp_parser *parser, cp_id_kind *idk)
+{
+  *idk = CP_ID_KIND_NONE;
+  if (cp_lexer_next_token_is (parser->lexer, CPP_NAME)
+      && cp_lexer_nth_token_is (parser->lexer, 2, CPP_BACKTICK))
+    return cp_parser_primary_expression (parser, /*address_p=*/false,
+					 /*cast_p=*/false,
+					 /*template_arg_p=*/false,
+					 /*decltype_p=*/false, idk);
+  if (tree tid = cp_parser_backtick_template_id_slot (parser))
+    {
+      *idk = CP_ID_KIND_TEMPLATE_ID;
+      return tid;
+    }
+  bool saved_backtick_p = parser->backtick_is_operator_p;
+  parser->backtick_is_operator_p = false;
+  cp_expr slot = cp_parser_assignment_expression (parser);
+  parser->backtick_is_operator_p = saved_backtick_p;
+  return slot;
+}
+
+/* Build the call SLOT (LHS, RHS) that a backtick infix operator desugars
+   to.  IDK is what cp_parser_backtick_slot reported for SLOT.  Whether
+   argument-dependent lookup applies, and whether it runs now or at
+   instantiation, follows cp_parser_postfix_expression exactly: when ordinary
+   lookup found a non-function there is no ADL ([basic.lookup.argdep]/3),
+   and when an argument is type-dependent the definition-context lookup
+   result is kept for the instantiation to augment
+   ([temp.dep.candidate]).  */
+
+static cp_expr
+cp_parser_backtick_call (cp_expr slot, cp_id_kind idk, cp_expr lhs,
+			 cp_expr rhs)
+{
+  releasing_vec args;
+  vec_safe_push (args, (tree) lhs);
+  vec_safe_push (args, (tree) rhs);
+
+  bool koenig_p = false;
+  if (slot == error_mark_node)
+    ;
+  else if (idk == CP_ID_KIND_UNQUALIFIED
+	   || idk == CP_ID_KIND_TEMPLATE_ID)
+    {
+      if (identifier_p (slot)
+	  || (TREE_CODE (slot) == TEMPLATE_ID_EXPR
+	      && identifier_p (TREE_OPERAND (slot, 0))))
+	{
+	  koenig_p = true;
+	  if (!any_type_dependent_arguments_p (args))
+	    slot = perform_koenig_lookup (slot, args, tf_warning_or_error);
+	}
+      else if (is_overloaded_fn (slot))
+	{
+	  bool do_adl_p = true;
+	  for (lkp_iterator iter (get_fns (slot)); iter; ++iter)
+	    {
+	      tree fn = STRIP_TEMPLATE (*iter);
+	      if ((TREE_CODE (fn) == USING_DECL && DECL_DEPENDENT_P (fn))
+		  || DECL_FUNCTION_MEMBER_P (fn)
+		  || DECL_LOCAL_DECL_P (fn))
+		{
+		  do_adl_p = false;
+		  break;
+		}
+	    }
+	  if (do_adl_p)
+	    {
+	      koenig_p = true;
+	      if (!any_type_dependent_arguments_p (args))
+		slot = perform_koenig_lookup (slot, args,
+					      tf_warning_or_error);
+	    }
+	}
+    }
+
+  return finish_call_expr (slot, &args, /*disallow_virtual=*/false,
+			   koenig_p, tf_warning_or_error);
+}
+
 static cp_expr
 cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 			     bool no_toplevel_fold_p,
@@ -12025,34 +12118,9 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	      token = cp_lexer_peek_token (parser->lexer);
 	      continue;
 	    }
-	  /* Parse the operator slot.  For a bare unqualified-id (CPP_NAME
-	     immediately followed by the closing CPP_BACKTICK), keep it as an
-	     IDENTIFIER_NODE so Koenig lookup can add ADL candidates from the
-	     operands' associated namespaces (§17.4).  A bare template-id
-	     (`f<...>` immediately followed by the close) is kept unresolved
-	     the same way, as a TEMPLATE_ID_EXPR.  All other slot forms —
-	     qualified names, member access, lambdas, arbitrary expressions —
-	     parse as assignment-expression as before.  */
-	  tree slot;
-	  bool slot_wants_adl = false;
-	  if (cp_lexer_peek_token (parser->lexer)->type == CPP_NAME
-	      && cp_lexer_nth_token_is (parser->lexer, 2, CPP_BACKTICK))
-	    {
-	      slot = cp_parser_identifier (parser);
-	      slot_wants_adl = (slot != error_mark_node);
-	    }
-	  else if (tree tid = cp_parser_backtick_template_id_slot (parser))
-	    {
-	      slot = tid;
-	      slot_wants_adl = (slot != error_mark_node);
-	    }
-	  else
-	    {
-	      bool saved_backtick_p = parser->backtick_is_operator_p;
-	      parser->backtick_is_operator_p = false;
-	      slot = cp_parser_assignment_expression (parser);
-	      parser->backtick_is_operator_p = saved_backtick_p;
-	    }
+	  /* Parse the operator slot (§17.4).  */
+	  cp_id_kind slot_idk;
+	  cp_expr slot = cp_parser_backtick_slot (parser, &slot_idk);
 	  /* Require the closing backtick; pass open_loc so that a missing-close
 	     diagnostic notes where the opening backtick was.  */
 	  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
@@ -12065,30 +12133,9 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	  /* Parse the RHS as a cast-expression (Option A: highest binary
 	     precedence; operands are cast-expressions).  */
 	  cp_expr rhs_bt = cp_parser_simple_cast_expression (parser);
-	  /* Build slot(lhs, rhs) with ADL.  */
-	  releasing_vec args;
-	  vec_safe_push (args, (tree) current.lhs);
-	  vec_safe_push (args, (tree) rhs_bt);
-	  /* For a bare-id slot, do ordinary lookup then Koenig augmentation,
-	     mirroring cp_parser_postfix_expression (§17.4; DEV-G05 fix).  */
-	  if (slot_wants_adl && !any_type_dependent_arguments_p (args))
-	    {
-	      if (identifier_p (slot))
-		{
-		  tree fns = lookup_name (slot);
-		  slot = perform_koenig_lookup (fns && fns != error_mark_node
-						? fns : slot,
-						args, tf_warning_or_error);
-		}
-	      else
-		/* A template-id slot already carries its ordinary-lookup
-		   result; perform_koenig_lookup augments it.  */
-		slot = perform_koenig_lookup (slot, args, tf_warning_or_error);
-	    }
-	  current.lhs = finish_call_expr (slot, &args,
-					  /*disallow_virtual=*/false,
-					  /*koenig_p=*/true,
-					  tf_warning_or_error);
+	  /* Build slot(lhs, rhs), with the call's lookup.  */
+	  current.lhs = cp_parser_backtick_call (slot, slot_idk, current.lhs,
+						 rhs_bt);
 	  current.lhs_type = ERROR_MARK;
 	  /* Loop for left-associativity.  */
 	  token = cp_lexer_peek_token (parser->lexer);
@@ -12165,26 +12212,8 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 		rhs = error_mark_node;
 		break;
 	      }
-	    tree bt_slot;
-	    bool bt_slot_wants_adl = false;
-	    if (cp_lexer_peek_token (parser->lexer)->type == CPP_NAME
-		&& cp_lexer_nth_token_is (parser->lexer, 2, CPP_BACKTICK))
-	      {
-		bt_slot = cp_parser_identifier (parser);
-		bt_slot_wants_adl = (bt_slot != error_mark_node);
-	      }
-	    else if (tree tid = cp_parser_backtick_template_id_slot (parser))
-	      {
-		bt_slot = tid;
-		bt_slot_wants_adl = (bt_slot != error_mark_node);
-	      }
-	    else
-	      {
-		bool saved_bt = parser->backtick_is_operator_p;
-		parser->backtick_is_operator_p = false;
-		bt_slot = cp_parser_assignment_expression (parser);
-		parser->backtick_is_operator_p = saved_bt;
-	      }
+	    cp_id_kind bt_slot_idk;
+	    cp_expr bt_slot = cp_parser_backtick_slot (parser, &bt_slot_idk);
 	    if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
 				   bt_open))
 	      {
@@ -12192,28 +12221,7 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 		break;
 	      }
 	    cp_expr bt_rhs = cp_parser_simple_cast_expression (parser);
-	    releasing_vec bt_args;
-	    vec_safe_push (bt_args, (tree)rhs);
-	    vec_safe_push (bt_args, (tree)bt_rhs);
-	    if (bt_slot_wants_adl && !any_type_dependent_arguments_p (bt_args))
-	      {
-		if (identifier_p (bt_slot))
-		  {
-		    tree fns = lookup_name (bt_slot);
-		    bt_slot = perform_koenig_lookup (fns
-						     && fns != error_mark_node
-						     ? fns : bt_slot,
-						     bt_args,
-						     tf_warning_or_error);
-		  }
-		else
-		  bt_slot = perform_koenig_lookup (bt_slot, bt_args,
-						   tf_warning_or_error);
-	      }
-	    rhs = finish_call_expr (bt_slot, &bt_args,
-				   /*disallow_virtual=*/false,
-				   /*koenig_p=*/true,
-				   tf_warning_or_error);
+	    rhs = cp_parser_backtick_call (bt_slot, bt_slot_idk, rhs, bt_rhs);
 	    rhs_type = ERROR_MARK;
 	    bt_tok = cp_lexer_peek_token (parser->lexer);
 	  }
