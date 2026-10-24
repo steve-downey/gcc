@@ -3603,9 +3603,12 @@ cpp_maybe_module_directive (cpp_reader *pfile, cpp_token *result)
   /* ... import followed by identifier, ':', '<' or
      header-name preprocessing tokens, or module
      followed by cpp-identifier, ':' or ';' preprocessing
-     tokens.  C++ keywords are not yet relevant.  */
+     tokens.  C++ keywords are not yet relevant.  A backtick, which
+     the lexer produces only under -fbacktick, opens an escaped first
+     component (escape-module-names).  */
   if (peek->type == CPP_NAME
       || peek->type == CPP_COLON
+      || peek->type == CPP_BACKTICK
       || (header_count
 	  ? (peek->type == CPP_LESS
 	     || (peek->type == CPP_STRING && peek->val.str.text[0] != 'R')
@@ -3652,12 +3655,33 @@ cpp_maybe_module_directive (cpp_reader *pfile, cpp_token *result)
       /* According to P3034R1, pp-module-name and pp-module-partition tokens
 	 if any shouldn't be macro expanded and identifiers shouldn't be
 	 defined as object-like macro.  */
-      if (!header_count && peek->type == CPP_NAME)
+      if (!header_count
+	  && (peek->type == CPP_NAME || peek->type == CPP_BACKTICK))
 	{
 	  int state = 0;
 	  do
 	    {
 	      cpp_token *tok = peek;
+	      /* A component may be escaped, `word`, under -fbacktick
+		 (escape-module-names).  The word is an identifier or an
+		 alternative token, and the rules for a bare component
+		 apply to it unchanged.  */
+	      bool escaped = false;
+	      if (tok->type == CPP_BACKTICK)
+		{
+		  peek = _cpp_lex_direct (pfile);
+		  backup++;
+		  if (peek->type == CPP_PRAGMA_EOL)
+		    {
+		      pfile->state.in_deferred_pragma = true;
+		      eol = true;
+		      break;
+		    }
+		  if (peek->type != CPP_NAME && !(peek->flags & NAMED_OP))
+		    break;
+		  tok = peek;
+		  escaped = true;
+		}
 	      if (tok->type == CPP_NAME)
 		{
 		  cpp_hashnode *node = tok->val.node.node;
@@ -3684,7 +3708,21 @@ cpp_maybe_module_directive (cpp_reader *pfile, cpp_token *result)
 		}
 	      peek = _cpp_lex_direct (pfile);
 	      backup++;
-	      if (tok->type == CPP_NAME)
+	      if (escaped)
+		{
+		  /* The closing backtick.  */
+		  if (peek->type == CPP_PRAGMA_EOL)
+		    {
+		      pfile->state.in_deferred_pragma = true;
+		      eol = true;
+		      break;
+		    }
+		  if (peek->type != CPP_BACKTICK)
+		    break;
+		  peek = _cpp_lex_direct (pfile);
+		  backup++;
+		}
+	      if (tok->type == CPP_NAME || escaped)
 		{
 		  if (peek->type == CPP_DOT)
 		    continue;
@@ -3724,7 +3762,7 @@ cpp_maybe_module_directive (cpp_reader *pfile, cpp_token *result)
 		  else
 		    break;
 		}
-	      else if (peek->type != CPP_NAME)
+	      else if (peek->type != CPP_NAME && peek->type != CPP_BACKTICK)
 		break;
 	    }
 	  while (true);

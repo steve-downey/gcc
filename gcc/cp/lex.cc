@@ -499,6 +499,8 @@ struct module_token_filter
   bool got_export : 1;
   bool got_colon : 1;
   bool want_dot : 1;
+  /* Inside a backtick-escaped component (escape-module-names).  */
+  bool in_escape : 1;
 
   location_t token_loc;
   cpp_reader *reader;
@@ -508,7 +510,7 @@ struct module_token_filter
   module_token_filter (cpp_reader *reader)
     : state (idle), is_import (false),
     got_export (false), got_colon (false), want_dot (false),
-    token_loc (UNKNOWN_LOCATION),
+    in_escape (false), token_loc (UNKNOWN_LOCATION),
     reader (reader), module (NULL), import (NULL)
   {
   };
@@ -540,6 +542,7 @@ struct module_token_filter
 	      state = module_first;
 	      want_dot = false;
 	      got_colon = false;
+	      in_escape = false;
 	      token_loc = loc;
 	      import = NULL;
 	      if (!got_export)
@@ -570,10 +573,36 @@ struct module_token_filter
 	/* FALLTHROUGH  */
 
       case module_cont:
+	if (in_escape)
+	  {
+	    /* `word`: the word, keyword or alternative token alike, names
+	       the component, and the closing backtick ends it.  */
+	    if (type == CPP_PADDING || type == CPP_COMMENT)
+	      break;
+	    if (type == CPP_PRAGMA_EOL)
+	      goto module_end;
+	    if (!want_dot && value && identifier_p (value))
+	      {
+		import = get_module (value, import, got_colon);
+		want_dot = true;
+	      }
+	    else if (want_dot && type == CPP_BACKTICK)
+	      in_escape = false;
+	    else
+	      state = module_end;
+	    break;
+	  }
 	switch (type)
 	  {
 	  case CPP_PADDING:
 	  case CPP_COMMENT:
+	    break;
+
+	  case CPP_BACKTICK:
+	    if (want_dot)
+	      state = module_end;
+	    else
+	      in_escape = true;
 	    break;
 
 	  default:
@@ -678,6 +707,10 @@ module_token_pre (cpp_reader *pfile, const cpp_token *tok, uintptr_t data_)
     }
   else if (tok->type == CPP_HEADER_NAME)
     value = build_string (tok->val.str.len, (const char *)tok->val.str.text);
+  else if (flag_backtick && (tok->flags & NAMED_OP))
+    /* An escaped alternative token carries its spelling
+       (escape-module-names).  */
+    value = get_identifier (cpp_type2name (tok->type, tok->flags));
 
   return module_token_lang (type, keyword, value, tok->src_loc, data_);
 }

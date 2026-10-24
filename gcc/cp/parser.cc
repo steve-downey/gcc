@@ -800,7 +800,13 @@ cp_lexer_new_main (void)
     {
       if (filter)
 	/* Process the previous token.  */
-	module_token_lang (tok->type, tok->keyword, tok->u.value,
+	module_token_lang (tok->type, tok->keyword,
+			   /* An escaped alternative token carries its
+			      spelling (escape-module-names).  */
+			   (flag_backtick && (tok->flags & NAMED_OP)
+			    ? get_identifier (cpp_type2name (tok->type,
+							     tok->flags))
+			    : tok->u.value),
 			   tok->location, filter);
 
       /* Attempt to optimize long lists of 0-255 integers
@@ -17771,6 +17777,9 @@ cp_parser_already_scoped_statement (cp_parser* parser, bool *if_p,
      identifier .
      module-name-qualifier identifier .
 
+   Under -fbacktick each identifier may be escaped, `word`, and names the
+   same module the bare word would (escape-module-names).
+
    Returns a pointer to the module object, or NULL on failure.
    For PARTITION_P, PARENT is the module this is a partition of.  */
 
@@ -17784,7 +17793,20 @@ cp_parser_module_name (cp_parser *parser, bool partition_p = false,
 
   for (;;)
     {
-      if (cp_lexer_peek_token (parser->lexer)->type != CPP_NAME)
+      tree name;
+      if (flag_backtick
+	  && cp_lexer_next_token_is (parser->lexer, CPP_BACKTICK))
+	{
+	  /* An escaped component; the helper diagnoses a malformed one.  */
+	  name = cp_parser_backtick_escaped_identifier (parser);
+	  /* The escape records itself for a declarator; this is none.  */
+	  parser->backtick_escaped_id_p = false;
+	  if (name == error_mark_node)
+	    return NULL;
+	}
+      else if (cp_lexer_next_token_is (parser->lexer, CPP_NAME))
+	name = cp_lexer_consume_token (parser->lexer)->u.value;
+      else
 	{
 	  if (partition_p)
 	    cp_parser_error (parser, "expected module-partition");
@@ -17792,8 +17814,6 @@ cp_parser_module_name (cp_parser *parser, bool partition_p = false,
 	    cp_parser_error (parser, "expected module-name");
 	  return NULL;
 	}
-
-      tree name = cp_lexer_consume_token (parser->lexer)->u.value;
       parent = get_module (name, parent, partition_p);
       if (cp_lexer_peek_token (parser->lexer)->type != CPP_DOT)
 	break;
