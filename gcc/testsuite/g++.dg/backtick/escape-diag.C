@@ -45,3 +45,31 @@ void escaped_name_is_printed_escaped ()
 {
   `new` ("x");         // { dg-error "invalid conversion from 'const char\\*' to 'int'" }
 }
+
+// ---------------------------------------------------------------------------
+// A type's name, a template parameter's and a namespace's are printed by
+// other routines than a declaration's, and are escaped the same way, so one
+// diagnostic never names its entities two ways (gcc-type-name-printing).
+// ---------------------------------------------------------------------------
+
+struct `union` { int x; };
+int class_type (`union` u) { return u.`new`; } // { dg-error "'struct `union`' has no member named '`new`'" }
+
+enum `enum` { e1 };
+`enum` enum_type = 1;	// { dg-error "invalid conversion from 'int' to '`enum`'" }
+
+template<class T> struct `virtual` { };
+int class_template (`virtual`<int> w) { return w.y; } // { dg-error "'struct `virtual`<int>' has no member named 'y'" }
+
+struct `and` { };
+int alternative_token (`and` a) { return a.q; } // { dg-error "'struct `and`' has no member named 'q'" }
+
+struct H { struct `union` { }; };
+int nested_type (H::`union` u) { return u.r; } // { dg-error "'struct H::`union`' has no member named 'r'" }
+
+namespace `namespace` { int k; }
+int namespace_name () { return `namespace`::nope; } // { dg-error "'nope' is not a member of '`namespace`'" }
+
+template<class `int`> int template_parm (`int` x) { return x.z; } // { dg-error "request for member 'z'" }
+int instantiate = template_parm (1);
+// { dg-message "In instantiation of 'int template_parm\\(`int`\\) \\\[with `int` = int\\\]'" "" { target *-*-* } 0 }

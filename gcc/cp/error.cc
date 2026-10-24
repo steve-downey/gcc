@@ -73,6 +73,7 @@ static void dump_type (cxx_pretty_printer *, tree, int);
 static void dump_typename (cxx_pretty_printer *, tree, int);
 static void dump_simple_decl (cxx_pretty_printer *, tree, tree, int);
 static void dump_decl (cxx_pretty_printer *, tree, int);
+static void dump_name_identifier (cxx_pretty_printer *, tree);
 static void dump_template_decl (cxx_pretty_printer *, tree, int);
 static void dump_function_decl (cxx_pretty_printer *, tree, int);
 static void dump_expr (cxx_pretty_printer *, tree, int);
@@ -479,10 +480,10 @@ dump_template_parameter (cxx_pretty_printer *pp, tree parm, int flags)
           if (TEMPLATE_TYPE_PARAMETER_PACK (TREE_TYPE (p)))
             pp_cxx_ws_string (pp, "...");
 	  if (DECL_NAME (p))
-	    pp_cxx_tree_identifier (pp, DECL_NAME (p));
+	    dump_name_identifier (pp, DECL_NAME (p));
 	}
       else if (DECL_NAME (p))
-	pp_cxx_tree_identifier (pp, DECL_NAME (p));
+	dump_name_identifier (pp, DECL_NAME (p));
       else
 	pp_cxx_canonical_template_parameter (pp, TREE_TYPE (p));
     }
@@ -642,7 +643,7 @@ dump_alias_template_specialization (cxx_pretty_printer *pp, tree t, int flags)
   tree decl = TYPE_NAME (t);
   if (!(flags & TFF_UNQUALIFIED_NAME))
     dump_scope (pp, CP_DECL_CONTEXT (decl), flags);
-  pp_cxx_tree_identifier (pp, DECL_NAME (decl));
+  dump_name_identifier (pp, DECL_NAME (decl));
   dump_template_parms (pp, DECL_TEMPLATE_INFO (decl),
 		       /*primary=*/false,
 		       flags & ~TFF_TEMPLATE_HEADER);
@@ -682,7 +683,7 @@ dump_type (cxx_pretty_printer *pp, tree t, int flags)
 	  pp_cxx_cv_qualifier_seq (pp, t);
 	  if (! (flags & TFF_UNQUALIFIED_NAME))
 	    dump_scope (pp, CP_DECL_CONTEXT (decl), flags);
-	  pp_cxx_tree_identifier (pp, TYPE_IDENTIFIER (t));
+	  dump_name_identifier (pp, TYPE_IDENTIFIER (t));
 	  return;
 	}
     }
@@ -772,7 +773,7 @@ dump_type (cxx_pretty_printer *pp, tree t, int flags)
     case TEMPLATE_TEMPLATE_PARM:
       /* For parameters inside template signature.  */
       if (TYPE_IDENTIFIER (t))
-	pp_cxx_tree_identifier (pp, TYPE_IDENTIFIER (t));
+	dump_name_identifier (pp, TYPE_IDENTIFIER (t));
       else
 	pp_cxx_canonical_template_parameter (pp, t);
       break;
@@ -781,7 +782,7 @@ dump_type (cxx_pretty_printer *pp, tree t, int flags)
       {
 	tree args = TYPE_TI_ARGS (t);
 	pp_cxx_cv_qualifier_seq (pp, t);
-	pp_cxx_tree_identifier (pp, TYPE_IDENTIFIER (t));
+	dump_name_identifier (pp, TYPE_IDENTIFIER (t));
 	pp_cxx_begin_template_argument_list (pp);
 	dump_template_argument_list (pp, args, flags);
 	pp_cxx_end_template_argument_list (pp);
@@ -793,11 +794,11 @@ dump_type (cxx_pretty_printer *pp, tree t, int flags)
       if (template_placeholder_p (t))
 	{
 	  tree tmpl = TREE_TYPE (CLASS_PLACEHOLDER_TEMPLATE (t));
-	  pp_cxx_tree_identifier (pp, TYPE_IDENTIFIER (tmpl));
+	  dump_name_identifier (pp, TYPE_IDENTIFIER (tmpl));
 	  pp_string (pp, "<...auto...>");
 	}
       else if (TYPE_IDENTIFIER (t))
-	pp_cxx_tree_identifier (pp, TYPE_IDENTIFIER (t));
+	dump_name_identifier (pp, TYPE_IDENTIFIER (t));
       else
 	pp_cxx_canonical_template_parameter
 	  (pp, TEMPLATE_TYPE_PARM_INDEX (t));
@@ -1019,7 +1020,7 @@ dump_aggr_type (cxx_pretty_printer *pp, tree t, int flags)
 	pp_printf (pp, M_("<unnamed %s>"), variety);
     }
   else
-    pp_cxx_tree_identifier (pp, DECL_NAME (decl));
+    dump_name_identifier (pp, DECL_NAME (decl));
 
   dump_module_suffix (pp, decl);
 
@@ -1404,6 +1405,40 @@ public:
    passes a raw keyword token to %qE as though it were a name.  */
 bool cp_printing_raw_token;
 
+/* Print T, an IDENTIFIER_NODE that is the name of an entity -- a
+   declaration, a type, a template parameter, a namespace.  Under -fbacktick
+   an entity can only be named by a keyword if the name was written as a
+   keyword-escape, `kw`, because a bare keyword is never a declarator-id.
+   The escape is then the only spelling the name has, so a diagnostic that
+   calls the entity `new' names it with a spelling no program under the
+   flag can contain, and text copied out of the diagnostic does not
+   re-parse.  Print the escape (design doc §3 keyword-escape-printing).  An
+   alternative token such as 'and' is the same case from the other side:
+   cpplib lexes a bare 'and' as '&&', so a name spelled that way can only
+   have been written escaped and must be printed escaped.  An ordinary
+   identifier written escaped prints bare, because it is an ordinary
+   identifier (escape-content).  Every printer of an entity's name comes
+   through here, so that a declaration and its type are not named two ways
+   in one diagnostic (gcc-type-name-printing).  */
+
+static void
+dump_name_identifier (cxx_pretty_printer *pp, tree t)
+{
+  if (flag_backtick && !cp_printing_raw_token
+      && (IDENTIFIER_KEYWORD_P (t)
+	  || (CPP_HASHNODE (GCC_IDENT_TO_HT_IDENT (t))->flags & NODE_OPERATOR)))
+    {
+      pp_cxx_maybe_whitespace (pp);
+      pp_string (pp, "`");
+      pp_string (pp, IDENTIFIER_POINTER (t));
+      pp_string (pp, "`");
+      pp->set_padding (pp_before);
+      return;
+    }
+
+  pp_cxx_tree_identifier (pp, t);
+}
+
 /* Print an IDENTIFIER_NODE that is the name of a declaration.  */
 
 static void
@@ -1432,30 +1467,7 @@ dump_decl_name (cxx_pretty_printer *pp, tree t, int flags)
       return;
     }
 
-  /* Under -fbacktick a declaration can only be named by a keyword if it was
-     written as a keyword-escape, `kw`, because grokdeclarator rejects a bare
-     keyword declarator-id.  The escape is then the only spelling the name
-     has, so a diagnostic that calls the entity `new' names it with a spelling
-     no program under the flag can contain, and text copied out of the
-     diagnostic does not re-parse.  Print the escape (design doc §3
-     keyword-escape-printing).  An alternative token such as 'and' is the
-     same case from the other side: cpplib lexes a bare 'and' as '&&', so a
-     name spelled that way can only have been written escaped and must be
-     printed escaped.  An ordinary identifier written escaped prints bare,
-     because it is an ordinary identifier (escape-content).  */
-  if (flag_backtick && !cp_printing_raw_token
-      && (IDENTIFIER_KEYWORD_P (t)
-	  || (CPP_HASHNODE (GCC_IDENT_TO_HT_IDENT (t))->flags & NODE_OPERATOR)))
-    {
-      pp_cxx_maybe_whitespace (pp);
-      pp_string (pp, "`");
-      pp_string (pp, str);
-      pp_string (pp, "`");
-      pp->set_padding (pp_before);
-      return;
-    }
-
-  pp_cxx_tree_identifier (pp, t);
+  dump_name_identifier (pp, t);
 }
 
 /* Dump a human readable string for the decl T under control of FLAGS.  */
@@ -1569,7 +1581,7 @@ dump_decl (cxx_pretty_printer *pp, tree t, int flags)
                 pp_cxx_ws_string (pp, M_("(anonymous namespace)"));
             }
 	  else
-	    pp_cxx_tree_identifier (pp, DECL_NAME (t));
+	    dump_name_identifier (pp, DECL_NAME (t));
 	}
       break;
 
@@ -1675,7 +1687,7 @@ dump_decl (cxx_pretty_printer *pp, tree t, int flags)
 
     case LABEL_DECL:
       if (DECL_NAME (t))
-	pp_cxx_tree_identifier (pp, DECL_NAME (t));
+	dump_name_identifier (pp, DECL_NAME (t));
       else
 	dump_generic_node (pp, t, 0, TDF_SLIM, false);
       break;
@@ -2536,7 +2548,7 @@ dump_expr (cxx_pretty_printer *pp, tree t, int flags)
       pp_ampersand (pp);
       dump_type (pp, PTRMEM_CST_CLASS (t), flags);
       pp_cxx_colon_colon (pp);
-      pp_cxx_tree_identifier (pp, DECL_NAME (PTRMEM_CST_MEMBER (t)));
+      dump_name_identifier (pp, DECL_NAME (PTRMEM_CST_MEMBER (t)));
       break;
 
     case COMPOUND_EXPR:
