@@ -3260,6 +3260,7 @@ dump_expr (cxx_pretty_printer *pp, tree t, int flags)
     case DELETE_EXPR:
     case VEC_DELETE_EXPR:
     case MODOP_EXPR:
+    case USER_OPERATOR_EXPR:
     case ABS_EXPR:
     case ABSU_EXPR:
     case CONJ_EXPR:

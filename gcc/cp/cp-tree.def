@@ -252,6 +252,15 @@ DEFTREECODE (PSEUDO_DTOR_EXPR, "pseudo_dtor_expr", tcc_expression, 3)
 /* A whole bunch of tree codes for the initial, superficial parsing of
    templates.  */
 DEFTREECODE (MODOP_EXPR, "modop_expr", tcc_expression, 3)
+/* A Unicode user-defined operator, x ⊞ y or ⊞x, written with a dependent
+   operand (-funicode-operators).  Operand 0 is the operator-function-id,
+   operator⊞; operand 1 the left (or only) operand; operand 2 the right
+   operand, or NULL_TREE for the prefix form.  A non-dependent use is the
+   call it desugars to and needs no node; a dependent one is kept as the
+   operator so that it is rebuilt as an operator at instantiation, with the
+   member candidates that are a property of the operator syntax and not of
+   the call.  */
+DEFTREECODE (USER_OPERATOR_EXPR, "user_operator_expr", tcc_expression, 3)
 DEFTREECODE (CAST_EXPR, "cast_expr", tcc_unary, 1)
 DEFTREECODE (REINTERPRET_CAST_EXPR, "reinterpret_cast_expr", tcc_unary, 1)
 DEFTREECODE (CONST_CAST_EXPR, "const_cast_expr", tcc_unary, 1)

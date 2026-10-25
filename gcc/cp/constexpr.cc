@@ -11116,6 +11116,7 @@ cxx_eval_constant_expression (const constexpr_ctx *ctx, tree t,
     case DELETE_EXPR:
     case VEC_DELETE_EXPR:
     case MODOP_EXPR:
+    case USER_OPERATOR_EXPR:
       /* GCC internal stuff.  */
     case VA_ARG_EXPR:
     case BASELINK:
@@ -13003,6 +13004,15 @@ potential_constant_expression_1 (tree t, bool want_rval, bool strict, bool now,
       if (!RECUR (TREE_OPERAND (t, 0), rval))
 	return false;
       if (!RECUR (TREE_OPERAND (t, 2), rval))
+	return false;
+      return true;
+
+    case USER_OPERATOR_EXPR:
+      /* A Unicode user-defined operator with dependent operands; whether
+	 the call it becomes is constant is settled at instantiation.  */
+      if (!RECUR (TREE_OPERAND (t, 1), rval))
+	return false;
+      if (TREE_OPERAND (t, 2) && !RECUR (TREE_OPERAND (t, 2), rval))
 	return false;
       return true;
 

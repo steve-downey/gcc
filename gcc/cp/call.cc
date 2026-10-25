@@ -15342,3 +15342,134 @@ conv_binds_to_reference_parm_p (tree type, tree expr)
 }
 
 #include "gt-cp-call.h"
+
+/* Report that no candidate, or (MATCH) no best candidate, was found for
+   the Unicode user-defined operator FNNAME applied to ARG1 and ARG2, or to
+   ARG1 alone.  The shape of op_error's message for the built-in-spelled
+   operators, naming the operator-function-id since there is no opname to
+   quote.  */
+
+static void
+user_op_error (location_t loc, tree fnname, tree arg1, tree arg2, bool match)
+{
+  if (arg2)
+    error_at (loc,
+	      match
+	      ? G_("ambiguous overload for %qD (operand types are %qT and %qT)")
+	      : G_("no match for %qD (operand types are %qT and %qT)"),
+	      fnname, TREE_TYPE (arg1), TREE_TYPE (arg2));
+  else
+    error_at (loc,
+	      match
+	      ? G_("ambiguous overload for %qD (operand type is %qT)")
+	      : G_("no match for %qD (operand type is %qT)"),
+	      fnname, TREE_TYPE (arg1));
+}
+
+/* The Unicode user-defined operator FNNAME (operator⊞) applied to ARG1 and
+   ARG2, or to ARG1 alone when ARG2 is NULL_TREE: the sibling of
+   build_new_op for an operator the ovl_op_info table does not know
+   (-funicode-operators).  Candidate assembly is that of an overloaded
+   operator ([over.match.oper]): member candidates from ARG1's class,
+   non-member candidates from the unqualified lookup of FNNAME -- LOOKUPS,
+   when non-NULL, is the phase 1 result saved at template definition time
+   -- augmented by argument-dependent lookup, all ranked as one set.  There
+   are no built-in candidates, because there is no built-in meaning, and no
+   enumeration-operand filter ([over.match.oper]/3.2), which exists to keep
+   the built-in candidates apart from a user's; a user operator on two ints
+   is the motivating case.  The result is the selected call, marked
+   CALL_EXPR_OPERATOR_SYNTAX as build_new_op marks its calls; its
+   evaluation order is the call's, which is to say the selected
+   overload's.  */
+
+tree
+build_new_user_op (location_t loc, tree fnname, int flags, tree arg1,
+		   tree arg2, tree lookups, tsubst_flags_t complain)
+{
+  struct z_candidate *candidates = 0, *cand;
+  releasing_vec arglist;
+  bool any_viable_p;
+
+  auto_cond_timevar tv (TV_OVERLOAD);
+
+  if (error_operand_p (arg1) || error_operand_p (arg2))
+    return error_mark_node;
+
+  conversion_obstack_sentinel cos;
+
+  arg1 = prep_operand (arg1);
+  arg2 = prep_operand (arg2);
+  arglist->quick_push (arg1);
+  if (arg2 != NULL_TREE)
+    arglist->quick_push (arg2);
+
+  /* Non-member candidates: the name's unqualified lookup, which sees no
+     class members, augmented by argument-dependent lookup.  */
+  tree fns;
+  if (!lookups)
+    fns = lookup_name (fnname, LOOK_where::BLOCK_NAMESPACE);
+  else if (tree found = purpose_member (fnname, lookups))
+    fns = TREE_VALUE (found);
+  else
+    fns = NULL_TREE;
+  fns = lookup_arg_dependent (fnname, fns, arglist);
+  add_candidates (fns, NULL_TREE, arglist, NULL_TREE,
+		  NULL_TREE, false, NULL_TREE, NULL_TREE,
+		  flags, &candidates, complain);
+
+  /* Member candidates, from the left operand's class and its bases.  */
+  tree arg1_type = unlowered_expr_type (arg1);
+  if (CLASS_TYPE_P (arg1_type))
+    {
+      tree mfns = lookup_fnfields (arg1_type, fnname, 1, complain);
+      if (mfns == error_mark_node)
+	return error_mark_node;
+      if (mfns)
+	add_candidates (BASELINK_FUNCTIONS (mfns),
+			NULL_TREE, arglist, NULL_TREE,
+			NULL_TREE, false,
+			BASELINK_BINFO (mfns),
+			BASELINK_ACCESS_BINFO (mfns),
+			flags, &candidates, complain);
+    }
+
+  candidates = splice_viable (candidates, false, &any_viable_p);
+  if (!any_viable_p)
+    {
+      if (complain & tf_error)
+	{
+	  auto_diagnostic_group d;
+	  user_op_error (loc, fnname, arg1, arg2, false);
+	  print_z_candidates (loc, candidates);
+	}
+      return error_mark_node;
+    }
+
+  cand = tourney (candidates, complain);
+  if (cand == 0)
+    {
+      if (complain & tf_error)
+	{
+	  auto_diagnostic_group d;
+	  user_op_error (loc, fnname, arg1, arg2, true);
+	  print_z_candidates (loc, candidates);
+	}
+      return error_mark_node;
+    }
+
+  gcc_checking_assert (TREE_CODE (cand->fn) == FUNCTION_DECL);
+  if (resolve_args (arglist, complain) == NULL)
+    return error_mark_node;
+
+  tree result = build_over_call (cand, LOOKUP_NORMAL, complain);
+
+  if (trivial_fn_p (cand->fn) || DECL_IMMEDIATE_FUNCTION_P (cand->fn))
+    /* There won't be a CALL_EXPR.  */;
+  else if (result && result != error_mark_node)
+    {
+      tree call = extract_call_expr (result);
+      CALL_EXPR_OPERATOR_SYNTAX (call) = true;
+    }
+
+  return result;
+}

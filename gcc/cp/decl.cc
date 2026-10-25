@@ -12759,7 +12759,8 @@ grokfndecl (tree ctype,
 	error_at (location,
 		  "deduction guide %qD must not have a function body", decl);
     }
-  else if (IDENTIFIER_ANY_OP_P (DECL_NAME (decl))
+  else if ((IDENTIFIER_ANY_OP_P (DECL_NAME (decl))
+	    || USER_OPER_P (DECL_NAME (decl)))
 	   && !grok_op_properties (decl, /*complain=*/true))
     return NULL_TREE;
   else if (UDLIT_OPER_P (DECL_NAME (decl)))
@@ -14528,7 +14529,7 @@ grokdeclarator (const cp_declarator *declarator,
 	  return error_mark_node;
 	}
 
-      if (IDENTIFIER_ANY_OP_P (dname))
+      if (IDENTIFIER_ANY_OP_P (dname) || USER_OPER_P (dname))
 	{
 	  if (typedef_p)
 	    {
@@ -16527,7 +16528,7 @@ grokdeclarator (const cp_declarator *declarator,
   if (!FUNC_OR_METHOD_TYPE_P (type))
     {
       /* Only functions may be declared using an operator-function-id.  */
-      if (dname && IDENTIFIER_ANY_OP_P (dname))
+      if (dname && (IDENTIFIER_ANY_OP_P (dname) || USER_OPER_P (dname)))
 	{
 	  error_at (id_loc, "declaration of %qD as non-function", dname);
 	  return error_mark_node;
@@ -18013,6 +18014,62 @@ grok_ctor_properties (const_tree ctype, const_tree decl)
   return true;
 }
 
+/* DECL is a function declared with a Unicode user-defined operator name,
+   operator⊞ (-funicode-operators).  Check it against the rules a user
+   operator has and return false if it is ill-formed.  Of [over.oper]'s
+   restrictions only the arity carries over: counting the implicit object
+   parameter, one operand declares the prefix form and two the infix form.
+   The class-or-enum parameter rule protects a token's built-in meaning,
+   and a user operator has none, so int operator⊞ (int, int) is the
+   motivating case rather than an error; default arguments and an ellipsis
+   are allowed because the operator syntax can never pass the extra
+   arguments, so nothing turns on them.  A static member is rejected, and
+   not because the arity rule excludes it -- static S operator⊞ (S, S) has
+   two operands -- but by choice: x ⊞ y means exactly one of operator⊞ (x, y)
+   and x.operator⊞ (y), and a static member is named by neither.  Nothing
+   here touches DECL_OVERLOADED_OPERATOR_CODE_RAW: the user operator is
+   outside the ovl_op_info table, and every consumer of that table is left
+   alone.  */
+
+static bool
+grok_user_op_properties (tree decl, bool complain)
+{
+  location_t loc = DECL_SOURCE_LOCATION (decl);
+
+  if (DECL_STATIC_FUNCTION_P (decl))
+    {
+      if (complain)
+	error_at (loc, "%qD must be either a non-static member "
+		  "function or a non-member function", decl);
+      return false;
+    }
+
+  unsigned arity = user_operator_arity (decl);
+  if (arity == 1 || arity == 2)
+    return true;
+
+  if (complain)
+    {
+      bool const methodp = TREE_CODE (TREE_TYPE (decl)) == METHOD_TYPE;
+      unsigned nparms = arity - methodp;
+      if (methodp)
+	error_n (loc, nparms,
+		 "user-defined operator %qD must have no parameters "
+		 "(prefix) or one parameter (infix); it has %u parameter",
+		 "user-defined operator %qD must have no parameters "
+		 "(prefix) or one parameter (infix); it has %u parameters",
+		 decl, nparms);
+      else
+	error_n (loc, nparms,
+		 "user-defined operator %qD must have one parameter "
+		 "(prefix) or two parameters (infix); it has %u parameter",
+		 "user-defined operator %qD must have one parameter "
+		 "(prefix) or two parameters (infix); it has %u parameters",
+		 decl, nparms);
+    }
+  return false;
+}
+
 /* DECL is a declaration for an overloaded or conversion operator.  If
    COMPLAIN is true, errors are issued for invalid declarations.  */
 
@@ -18023,6 +18080,11 @@ grok_op_properties (tree decl, bool complain)
   bool const methodp = DECL_IOBJ_MEMBER_FUNCTION_P (decl);
   tree name = DECL_NAME (decl);
   location_t loc = DECL_SOURCE_LOCATION (decl);
+
+  /* A Unicode user-defined operator is outside the ovl_op_info table
+     everything below is keyed on; it has rules of its own.  */
+  if (USER_OPER_P (name))
+    return grok_user_op_properties (decl, complain);
 
   tree class_type = DECL_CONTEXT (decl);
   if (class_type && !CLASS_TYPE_P (class_type))

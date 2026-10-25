@@ -12530,3 +12530,64 @@ c_decl_implicit (const_tree)
 {
   return false;
 }
+
+/* The DEPENDENT_OPERATOR_TYPE for a dependent use of the Unicode
+   user-defined operator FNNAME: the counterpart of
+   build_dependent_operator_type for an operator the ovl_op_info table does
+   not know.  LOOKUPS, if non-NULL, is the phase 1 lookup saved earlier;
+   otherwise the unqualified lookup of FNNAME is performed now, at template
+   definition time, and saved for the instantiation to augment with
+   argument-dependent lookup.  */
+
+static tree
+build_dependent_user_operator_type (tree lookups, tree fnname)
+{
+  if (lookups)
+    return TREE_TYPE (lookups);
+
+  tree fns = lookup_name (fnname, LOOK_where::BLOCK_NAMESPACE);
+  lookups = build_tree_list (fns ? fnname : NULL_TREE, fns);
+
+  tree type = cxx_make_type (DEPENDENT_OPERATOR_TYPE);
+  DEPENDENT_OPERATOR_TYPE_SAVED_LOOKUPS (type) = lookups;
+  TREE_TYPE (lookups) = type;
+  return type;
+}
+
+/* Build the Unicode user-defined operator expression OPNAME applied to
+   ARG1 and ARG2 -- x ⊞ y -- or to ARG1 alone when ARG2 is NULL_TREE, the
+   prefix form ⊞x (-funicode-operators).  The sibling of build_x_binary_op
+   and build_x_unary_op: in a template a type-dependent operand yields a
+   USER_OPERATOR_EXPR to be rebuilt at instantiation, carrying the phase 1
+   lookup of OPNAME; otherwise the result is the call the operator desugars
+   to, from build_new_user_op.  */
+
+tree
+build_x_user_operator (location_t loc, tree opname, tree arg1, tree arg2,
+		       tree lookups, tsubst_flags_t complain)
+{
+  tree orig_arg1 = arg1;
+  tree orig_arg2 = arg2;
+
+  if (processing_template_decl)
+    {
+      if (type_dependent_expression_p (arg1)
+	  || (arg2 && type_dependent_expression_p (arg2)))
+	{
+	  tree expr = build_min_nt_loc (loc, USER_OPERATOR_EXPR,
+					opname, arg1, arg2);
+	  TREE_TYPE (expr)
+	    = build_dependent_user_operator_type (lookups, opname);
+	  return expr;
+	}
+    }
+
+  tree expr = build_new_user_op (loc, opname, LOOKUP_NORMAL, arg1, arg2,
+				 lookups, complain);
+
+  if (processing_template_decl && expr != error_mark_node)
+    return build_min_non_dep (USER_OPERATOR_EXPR, expr,
+			      opname, orig_arg1, orig_arg2);
+
+  return expr;
+}

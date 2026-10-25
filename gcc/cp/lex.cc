@@ -841,7 +841,7 @@ unqualified_name_lookup_error (tree name, location_t loc)
   if (loc == UNKNOWN_LOCATION)
     loc = cp_expr_loc_or_input_loc (name);
 
-  if (IDENTIFIER_ANY_OP_P (name))
+  if (IDENTIFIER_ANY_OP_P (name) || USER_OPER_P (name))
     error_at (loc, "%qD not defined", name);
   else if (!flag_concepts && name == ridpointers[(int)RID_REQUIRES])
     error_at (loc, "%<requires%> only available with %<-std=c++20%> or "
@@ -1276,3 +1276,89 @@ in_main_input_context (void)
 }
 
 #include "gt-cp-lex.h"
+
+/* Unicode user-defined operators (-funicode-operators).  See cp-tree.h.  */
+
+/* True if ID is the operator-function-id of a user-defined operator,
+   operator⊞: "operator" followed by one code point of the frozen operator
+   set, spelled in UTF-8.  Nothing but cp_user_operator_id makes such an
+   identifier under the flag; without it the spelling can arise only from a
+   program the lexer has already rejected, and is then an ordinary (bad)
+   name, so the flag gates the predicate too.  */
+
+bool
+user_operator_identifier_p (tree id)
+{
+  if (!flag_unicode_operators || !id || !identifier_p (id))
+    return false;
+  const size_t plen = sizeof (USER_OP_ANSI_PREFIX) - 1;
+  const unsigned char *p = (const unsigned char *) IDENTIFIER_POINTER (id);
+  size_t len = IDENTIFIER_LENGTH (id);
+  if (len <= plen || p[plen] < 0xC0
+      || memcmp (p, USER_OP_ANSI_PREFIX, plen) != 0)
+    return false;
+  cppchar_t c;
+  return (cpp_user_operator_code_point (p + plen, len - plen, &c)
+	  && cpp_user_operator_p (c));
+}
+
+/* The code point of the user-defined operator ID names.  This is the
+   operator's identity -- what the mangled name, and nothing else, is
+   derived from.  */
+
+cppchar_t
+user_operator_code_point (tree id)
+{
+  gcc_checking_assert (user_operator_identifier_p (id));
+  const size_t plen = sizeof (USER_OP_ANSI_PREFIX) - 1;
+  cppchar_t c = 0;
+  cpp_user_operator_code_point ((const unsigned char *) IDENTIFIER_POINTER (id)
+				+ plen, IDENTIFIER_LENGTH (id) - plen, &c);
+  return c;
+}
+
+/* Return the operator-function-id for the user-defined operator whose
+   CPP_USER_OPERATOR token carried GLYPH, the IDENTIFIER_NODE of the
+   canonical UTF-8 spelling of its code point.  The token's node is
+   canonical however the source spelled it -- glyph, \u, \U or \N{} --
+   so this is the one place a spelling becomes the operator's identity, and
+   `operator⊞', `operator\u229E' and `operator\N{SQUARED PLUS}' are one
+   name.  */
+
+tree
+cp_user_operator_id (tree glyph)
+{
+  const size_t plen = sizeof (USER_OP_ANSI_PREFIX) - 1;
+  size_t glen = IDENTIFIER_LENGTH (glyph);
+  char *buffer = XNEWVEC (char, plen + glen + 1);
+  memcpy (buffer, USER_OP_ANSI_PREFIX, plen);
+  memcpy (buffer + plen, IDENTIFIER_POINTER (glyph), glen);
+  buffer[plen + glen] = '\0';
+  tree id = get_identifier_with_length (buffer, plen + glen);
+  XDELETEVEC (buffer);
+  gcc_checking_assert (user_operator_identifier_p (id));
+  return id;
+}
+
+/* The arity of the user-defined operator function DECL: the number of
+   operands its operator syntax has, which is its declared parameters plus
+   one for an implicit object parameter.  One is the prefix form, two the
+   infix form; anything else is ill-formed (grok_op_properties).  A
+   trailing ellipsis is not counted, and nor are default arguments
+   discounted: the operator syntax passes exactly this many arguments.  */
+
+unsigned
+user_operator_arity (tree decl)
+{
+  tree args = TYPE_ARG_TYPES (TREE_TYPE (decl));
+  unsigned n = 0;
+  if (TREE_CODE (TREE_TYPE (decl)) == METHOD_TYPE)
+    {
+      /* The implicit object parameter is the first operand.  */
+      n = 1;
+      args = TREE_CHAIN (args);
+    }
+  for (; args && args != void_list_node; args = TREE_CHAIN (args))
+    n++;
+  return n;
+}

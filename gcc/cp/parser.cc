@@ -8009,7 +8009,33 @@ cp_parser_unqualified_id (cp_parser* parser,
 	  id = cp_parser_operator_function_id (parser);
 	  /* If that didn't work, try a conversion-function-id.  */
 	  if (!cp_parser_parse_definitely (parser))
-	    id = cp_parser_conversion_function_id (parser);
+	    {
+	      cp_token *after = cp_lexer_peek_nth_token (parser->lexer, 2);
+	      id = cp_parser_conversion_function_id (parser);
+	      /* UAX #31's mathematical notation profile reserves ∂, ∇ and ∞
+		 as identifier characters, which is why they are excluded
+		 from the user-operator set (-funicode-operators) and why
+		 the lexer cannot say so: `operator ∂' is a
+		 conversion-function-id whose type is unknown, the one
+		 position where an operator was unambiguously meant.  */
+	      if (id == error_mark_node
+		  && flag_unicode_operators
+		  && after->type == CPP_NAME
+		  && !cp_parser_uncommitted_to_tentative_parse_p (parser))
+		{
+		  cppchar_t c;
+		  tree name = after->u.value;
+		  if (cpp_user_operator_code_point
+			((const unsigned char *) IDENTIFIER_POINTER (name),
+			 IDENTIFIER_LENGTH (name), &c)
+		      && (cpp_user_operator_exclusion (c, NULL)
+			  == CPP_UOP_IDENTIFIER_PROFILE))
+		    inform (after->location, "%qE U+%x is not a user-defined "
+			    "operator: the mathematical notation profile of "
+			    "UAX #31 reserves it as an identifier character",
+			    name, (unsigned) c);
+		}
+	    }
 
 	  return id;
 	}
@@ -10848,6 +10874,29 @@ cp_parser_unary_expression (cp_parser *parser, cp_id_kind * pidk,
   else if (cp_lexer_next_token_is (parser->lexer, CPP_REFLECT_OP))
     return cp_parser_reflect_expression (parser);
 
+  /* A Unicode user-defined operator in operand position is its prefix
+     form, ⊖x (-funicode-operators).  The operand is a cast-expression, so
+     the prefix form binds like the other unary operators: tighter than any
+     binary operator, the user-infix level included.  Position alone tells
+     it from the infix form, which cp_parser_binary_expression reads after a
+     complete operand; nothing here consults a declaration.  */
+  if (flag_unicode_operators && token->type == CPP_USER_OPERATOR)
+    {
+      location_t loc = token->location;
+      cp_lexer_consume_token (parser->lexer);
+      tree opname = cp_user_operator_id (token->u.value);
+      cp_expr operand
+	= cp_parser_cast_expression (parser, /*address_p=*/false,
+				     /*cast_p=*/false, /*decltype_p=*/false,
+				     pidk);
+      loc = make_location (loc, loc, operand.get_finish ());
+      cp_expr expression
+	= build_x_user_operator (loc, opname, operand, NULL_TREE, NULL_TREE,
+				 complain_flags (decltype_p));
+      expression.set_location (loc);
+      return expression;
+    }
+
   /* Look for a unary operator.  */
   unary_operator = cp_parser_unary_operator (token);
   /* The `++' and `--' operators can be handled similarly, even though
@@ -12200,6 +12249,79 @@ cp_parser_backtick_call (cp_expr slot, cp_id_kind idk, cp_expr lhs,
 			   koenig_p, tf_warning_or_error);
 }
 
+/* True if TOKEN, in operator position, is a user-introduced infix
+   operator: the opening backtick of a backtick infix operator, when a
+   backtick is the operator rather than a slot's closing delimiter, or a
+   Unicode user-defined operator.  The two occupy one level, the
+   user-infix level, which is the highest binary precedence (design doc,
+   precedence-level; unicode-operators.md, user-infix-precedence), and
+   neither is in binops_by_token, so cp_parser_binary_expression handles
+   them ahead of the precedence table and they chain left together.  */
+
+static inline bool
+cp_parser_user_infix_operator_p (cp_parser *parser, const cp_token *token)
+{
+  return ((flag_backtick
+	   && token->type == CPP_BACKTICK
+	   && parser->backtick_is_operator_p)
+	  || (flag_unicode_operators && token->type == CPP_USER_OPERATOR));
+}
+
+/* Parse one operation at the user-infix level whose left operand LHS has
+   been parsed and whose operator token is next:
+
+     LHS ` slot ` cast-expression      -> slot (LHS, cast-expression)
+     LHS user-operator cast-expression -> operator⊞ (LHS, cast-expression)
+
+   The backtick slot is parsed by cp_parser_backtick_slot and the call
+   built by cp_parser_backtick_call (design doc §17.4); the Unicode
+   operator goes to build_x_user_operator, which assembles candidates as
+   for an overloaded operator.  Returns error_mark_node after a diagnosed
+   error.  */
+
+static cp_expr
+cp_parser_user_infix_operation (cp_parser *parser, cp_expr lhs,
+				bool decltype_p)
+{
+  cp_token *token = cp_lexer_consume_token (parser->lexer);
+
+  if (token->type == CPP_USER_OPERATOR)
+    {
+      tree opname = cp_user_operator_id (token->u.value);
+      cp_expr rhs = cp_parser_simple_cast_expression (parser);
+      location_t loc = make_location (token->location, lhs.get_start (),
+				      rhs.get_finish ());
+      cp_expr result = build_x_user_operator (loc, opname, lhs, rhs,
+					      NULL_TREE,
+					      complain_flags (decltype_p));
+      result.set_location (loc);
+      return result;
+    }
+
+  /* The opening backtick; its location lets a missing-close diagnostic
+     note where the matching open was.  */
+  location_t open_loc = token->location;
+  cp_token *next = cp_lexer_peek_token (parser->lexer);
+  if (next->type == CPP_BACKTICK)
+    {
+      /* Empty slot: two consecutive backticks with no expression.  */
+      error_at (next->location,
+		"expected expression between %<`%> and %<`%>");
+      cp_lexer_consume_token (parser->lexer);
+      return error_mark_node;
+    }
+  /* Parse the operator slot (§17.4).  */
+  cp_id_kind slot_idk;
+  cp_expr slot = cp_parser_backtick_slot (parser, &slot_idk);
+  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK, open_loc))
+    return error_mark_node;
+  /* The RHS is a cast-expression (Option A: highest binary precedence;
+     operands are cast-expressions).  */
+  cp_expr rhs = cp_parser_simple_cast_expression (parser);
+  /* Build slot (lhs, rhs), with the call's lookup.  */
+  return cp_parser_backtick_call (slot, slot_idk, lhs, rhs);
+}
+
 static cp_expr
 cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 			     bool no_toplevel_fold_p,
@@ -12250,49 +12372,17 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 	/* This is a fold-expression; handle it later.  */
 	new_prec = PREC_NOT_OPERATOR;
 
-      /* Backtick infix operator: `x `f` y` desugars to `f(x, y)`.
-	 Highest binary precedence; handled before the precedence table
-	 because CPP_BACKTICK has no entry in binops_by_token.  Skip
-	 when the LHS already has an error (error recovery path).  */
-      if (flag_backtick
-	  && token->type == CPP_BACKTICK
-	  && parser->backtick_is_operator_p
+      /* The user-infix level: a backtick infix operator, `x `f` y` for
+	 f (x, y), or a Unicode user-defined operator, x ⊞ y for
+	 operator⊞ (x, y).  Highest binary precedence, left-associative,
+	 handled before the precedence table because neither token has an
+	 entry in binops_by_token.  Skipped when the LHS already has an
+	 error (error recovery path).  */
+      if (cp_parser_user_infix_operator_p (parser, token)
 	  && current.lhs != error_mark_node)
 	{
-	  /* Save the opening backtick location so a missing-close diagnostic
-	     can note where the matching open was.  */
-	  location_t open_loc = token->location;
-	  /* Consume the opening backtick.  */
-	  cp_lexer_consume_token (parser->lexer);
-	  /* Empty slot: two consecutive backticks with no expression.  */
-	  cp_token *next = cp_lexer_peek_token (parser->lexer);
-	  if (next->type == CPP_BACKTICK)
-	    {
-	      error_at (next->location,
-		        "expected expression between %<`%> and %<`%>");
-	      cp_lexer_consume_token (parser->lexer);
-	      current.lhs = error_mark_node;
-	      token = cp_lexer_peek_token (parser->lexer);
-	      continue;
-	    }
-	  /* Parse the operator slot (§17.4).  */
-	  cp_id_kind slot_idk;
-	  cp_expr slot = cp_parser_backtick_slot (parser, &slot_idk);
-	  /* Require the closing backtick; pass open_loc so that a missing-close
-	     diagnostic notes where the opening backtick was.  */
-	  if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
-				  open_loc))
-	    {
-	      current.lhs = error_mark_node;
-	      token = cp_lexer_peek_token (parser->lexer);
-	      continue;
-	    }
-	  /* Parse the RHS as a cast-expression (Option A: highest binary
-	     precedence; operands are cast-expressions).  */
-	  cp_expr rhs_bt = cp_parser_simple_cast_expression (parser);
-	  /* Build slot(lhs, rhs), with the call's lookup.  */
-	  current.lhs = cp_parser_backtick_call (slot, slot_idk, current.lhs,
-						 rhs_bt);
+	  current.lhs = cp_parser_user_infix_operation (parser, current.lhs,
+							decltype_p);
 	  current.lhs_type = ERROR_MARK;
 	  /* Loop for left-associativity.  */
 	  token = cp_lexer_peek_token (parser->lexer);
@@ -12347,42 +12437,19 @@ cp_parser_binary_expression (cp_parser* parser, bool cast_p,
 		  ? TRUTH_NOT_EXPR : ERROR_MARK);
       rhs = cp_parser_simple_cast_expression (parser);
 
-      /* Backtick has highest binary precedence — if a backtick follows the
-	 RHS, consume it (and any chained backticks) before building the
-	 enclosing binary operation.  This ensures `a * b `f` c` yields
-	 a * f(b, c) rather than f(a*b, c).  */
-      {
-	cp_token *bt_tok = cp_lexer_peek_token (parser->lexer);
-	while (flag_backtick
-	       && bt_tok->type == CPP_BACKTICK
-	       && parser->backtick_is_operator_p
-	       && rhs != error_mark_node)
-	  {
-	    location_t bt_open = bt_tok->location;
-	    cp_lexer_consume_token (parser->lexer);
-	    bt_tok = cp_lexer_peek_token (parser->lexer);
-	    if (bt_tok->type == CPP_BACKTICK)
-	      {
-		error_at (bt_tok->location,
-			  "expected expression between %<`%> and %<`%>");
-		cp_lexer_consume_token (parser->lexer);
-		rhs = error_mark_node;
-		break;
-	      }
-	    cp_id_kind bt_slot_idk;
-	    cp_expr bt_slot = cp_parser_backtick_slot (parser, &bt_slot_idk);
-	    if (!cp_parser_require (parser, CPP_BACKTICK, RT_CLOSE_BACKTICK,
-				   bt_open))
-	      {
-		rhs = error_mark_node;
-		break;
-	      }
-	    cp_expr bt_rhs = cp_parser_simple_cast_expression (parser);
-	    rhs = cp_parser_backtick_call (bt_slot, bt_slot_idk, rhs, bt_rhs);
-	    rhs_type = ERROR_MARK;
-	    bt_tok = cp_lexer_peek_token (parser->lexer);
-	  }
-      }
+      /* The user-infix level binds tighter than every entry in the
+	 precedence table, so a user-infix operator following the RHS is
+	 applied to it, and chained, before the enclosing binary operation
+	 is built: a * b `f` c is a * f (b, c), and a * b ⊞ c is
+	 a * operator⊞ (b, c).  */
+      for (cp_token *infix_tok = cp_lexer_peek_token (parser->lexer);
+	   (cp_parser_user_infix_operator_p (parser, infix_tok)
+	    && rhs != error_mark_node);
+	   infix_tok = cp_lexer_peek_token (parser->lexer))
+	{
+	  rhs = cp_parser_user_infix_operation (parser, rhs, decltype_p);
+	  rhs_type = ERROR_MARK;
+	}
 
       /* Get another operator token.  Look up its precedence to avoid
 	 building a useless (immediately popped) stack entry for common
@@ -21171,6 +21238,19 @@ cp_parser_operator (cp_parser* parser, location_t start_loc)
 	location_t combined_loc
 	  = make_location (start_loc, start_loc, parser->lexer);
 	return cp_expr (id, combined_loc);
+      }
+
+    case CPP_USER_OPERATOR:
+      {
+	/* operator⊞: a Unicode user-defined operator (-funicode-operators).
+	   The token's value is the canonical UTF-8 spelling of the code
+	   point, however the source spelled it, so every spelling of the
+	   operator names one entity.  The name is outside the ovl_op_info
+	   table, like a literal operator's.  */
+	cp_lexer_consume_token (parser->lexer);
+	id = cp_user_operator_id (token->u.value);
+	start_loc = make_location (start_loc, start_loc, get_finish (end_loc));
+	return cp_expr (id, start_loc);
       }
 
     default:

@@ -2440,6 +2440,22 @@ struct GTY(()) language_function {
 /* In parser.cc.  */
 extern tree cp_literal_operator_id (const char *);
 
+/* Unicode user-defined operators (-funicode-operators).  The
+   operator-function-id operator⊞ is an IDENTIFIER_NODE spelled
+   "operator" followed by the canonical UTF-8 encoding of the operator's
+   code point.  Like a literal operator's identifier (cp_literal_operator_id)
+   it lives outside the ovl_op_info table, and like UDLIT_OPER_P it is
+   recognized by its spelling: the code point after the keyword is in the
+   frozen operator set, which no identifier character is
+   (operator-identifier-disjointness), so the test is exact.  Every
+   predicate below is false with the flag off, whatever the spelling.  */
+#define USER_OP_ANSI_PREFIX "operator"
+extern bool user_operator_identifier_p		(tree);
+#define USER_OPER_P(ID_NODE) user_operator_identifier_p (ID_NODE)
+extern cppchar_t user_operator_code_point	(tree);
+extern tree cp_user_operator_id			(tree);
+extern unsigned user_operator_arity		(tree);
+
 #define NON_ERROR(NODE) ((NODE) == error_mark_node ? NULL_TREE : (NODE))
 
 /* TRUE if a tree code represents a statement.  */
@@ -7342,6 +7358,8 @@ extern tree build_new_method_call		(tree, tree,
 extern tree build_special_member_call		(tree, tree,
 						 vec<tree, va_gc> **,
 						 tree, int, tsubst_flags_t);
+extern tree build_new_user_op			(location_t, tree, int, tree,
+						 tree, tree, tsubst_flags_t);
 extern tree build_new_op			(const op_location_t &,
 						 enum tree_code,
 						 int, tree, tree, tree, tree,
@@ -8985,6 +9003,8 @@ extern tree cp_build_function_call_nary         (tree, tsubst_flags_t, ...)
 extern tree cp_build_function_call_vec		(tree, vec<tree, va_gc> **,
 						 tsubst_flags_t,
 						 tree = NULL_TREE);
+extern tree build_x_user_operator		(location_t, tree, tree, tree,
+						 tree, tsubst_flags_t);
 extern tree build_x_binary_op			(const op_location_t &,
 						 enum tree_code, tree,
 						 enum tree_code, tree,

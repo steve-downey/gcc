@@ -1112,6 +1112,32 @@ cxx_pretty_printer::assignment_expression (tree e)
     }
 }
 
+/* x ⊞ y or ⊞x: a Unicode user-defined operator expression written with
+   dependent operands (-funicode-operators).  Operand 0 is the
+   operator-function-id, operator⊞, and the glyph is its spelling after the
+   keyword.  The operands are cast-expressions, so a chain prints left to
+   right as it groups.  */
+
+static void
+pp_cxx_user_operator_expression (cxx_pretty_printer *pp, tree t)
+{
+  const char *glyph = (IDENTIFIER_POINTER (TREE_OPERAND (t, 0))
+		       + sizeof (USER_OP_ANSI_PREFIX) - 1);
+  if (TREE_OPERAND (t, 2))
+    {
+      pp->expression (TREE_OPERAND (t, 1));
+      pp_cxx_whitespace (pp);
+      pp_string (pp, glyph);
+      pp_cxx_whitespace (pp);
+      pp->expression (TREE_OPERAND (t, 2));
+    }
+  else
+    {
+      pp_string (pp, glyph);
+      pp->expression (TREE_OPERAND (t, 1));
+    }
+}
+
 void
 cxx_pretty_printer::expression (tree t)
 {
@@ -1230,6 +1256,10 @@ cxx_pretty_printer::expression (tree t)
     case THROW_EXPR:
     case MODOP_EXPR:
       assignment_expression (t);
+      break;
+
+    case USER_OPERATOR_EXPR:
+      pp_cxx_user_operator_expression (this, t);
       break;
 
     case MUST_NOT_THROW_EXPR:

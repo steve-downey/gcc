@@ -11188,6 +11188,7 @@ for_each_template_parm_r (tree *tp, int *walk_subtrees, void *d)
       break;
 
     case MODOP_EXPR:
+    case USER_OPERATOR_EXPR:
     case CAST_EXPR:
     case IMPLICIT_CONV_EXPR:
     case REINTERPRET_CAST_EXPR:
@@ -15512,7 +15513,7 @@ tsubst_function_decl (tree t, tree args, tsubst_flags_t complain,
   /* If we aren't complaining now, return on error before we register
      the specialization so that we'll complain eventually.  */
   if ((complain & tf_error) == 0
-      && IDENTIFIER_ANY_OP_P (DECL_NAME (r))
+      && (IDENTIFIER_ANY_OP_P (DECL_NAME (r)) || USER_OPER_P (DECL_NAME (r)))
       && !grok_op_properties (r, /*complain=*/false))
     return error_mark_node;
 
@@ -15664,7 +15665,8 @@ tsubst_function_decl (tree t, tree args, tsubst_flags_t complain,
 	clone_cdtor (r, /*update_methods=*/false);
     }
   else if ((complain & tf_error) != 0
-	   && IDENTIFIER_ANY_OP_P (DECL_NAME (r))
+	   && (IDENTIFIER_ANY_OP_P (DECL_NAME (r))
+	       || USER_OPER_P (DECL_NAME (r)))
 	   && !grok_op_properties (r, /*complain=*/true))
     return error_mark_node;
 
@@ -22038,6 +22040,26 @@ tsubst_expr (tree t, tree args, tsubst_flags_t complain, tree in_decl)
 	if (EXPR_P (r))
 	  copy_warning (r, t);
 
+	RETURN (r);
+      }
+
+    case USER_OPERATOR_EXPR:
+      {
+	/* A Unicode user-defined operator, x ⊞ y or ⊞x, written with a
+	   dependent operand (-funicode-operators).  Rebuilt as the operator
+	   and not as the call it desugars to, so that the member candidates,
+	   which are a property of the operator syntax, are assembled again
+	   here; the non-member lookup of the definition context travels in
+	   the saved lookups, as it does for every dependent operator.  */
+	tree op0 = RECUR (TREE_OPERAND (t, 1));
+	tree op1 = (TREE_OPERAND (t, 2)
+		    ? RECUR (TREE_OPERAND (t, 2)) : NULL_TREE);
+	tree r = build_x_user_operator (EXPR_LOCATION (t),
+					TREE_OPERAND (t, 0), op0, op1,
+					templated_operator_saved_lookups (t),
+					complain|decltype_flag);
+	if (EXPR_P (r))
+	  copy_warning (r, t);
 	RETURN (r);
       }
 
@@ -30232,6 +30254,12 @@ value_dependent_expression_p (tree expression)
     case MODOP_EXPR:
       return ((value_dependent_expression_p (TREE_OPERAND (expression, 0)))
 	      || (value_dependent_expression_p (TREE_OPERAND (expression, 2))));
+
+    case USER_OPERATOR_EXPR:
+      return (value_dependent_expression_p (TREE_OPERAND (expression, 1))
+	      || (TREE_OPERAND (expression, 2)
+		  && value_dependent_expression_p
+		       (TREE_OPERAND (expression, 2))));
 
     case ARRAY_REF:
       return ((value_dependent_expression_p (TREE_OPERAND (expression, 0)))

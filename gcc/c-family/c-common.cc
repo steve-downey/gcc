@@ -7067,7 +7067,7 @@ c_parse_error (const char *gmsgid, enum cpp_ttype token_type,
     message = catenate_messages (gmsgid, " before string constant");
   else if (token_type == CPP_NUMBER)
     message = catenate_messages (gmsgid, " before numeric constant");
-  else if (token_type == CPP_NAME)
+  else if (token_type == CPP_NAME || token_type == CPP_USER_OPERATOR)
     {
       message = catenate_messages (gmsgid, " before %qE");
       error_at (richloc, message, value);

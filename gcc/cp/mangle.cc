@@ -203,6 +203,7 @@ static void write_unqualified_name (tree);
 static void write_conversion_operator_name (const tree);
 static void write_source_name (tree);
 static void write_literal_operator_name (tree);
+static void write_user_operator_name (tree, unsigned);
 static void write_unnamed_type_name (const tree);
 static void write_unnamed_enum_name (const tree);
 static void write_closure_type_name (const tree);
@@ -1514,6 +1515,11 @@ write_unqualified_id (tree identifier)
     }
   else if (UDLIT_OPER_P (identifier))
     write_literal_operator_name (identifier);
+  else if (USER_OPER_P (identifier))
+    /* A bare operator-function-id carries no arity; in an unresolved
+       name the call's argument count would be the right digit, and the
+       infix form is the common one.  */
+    write_user_operator_name (identifier, 2);
   else
     write_source_name (identifier);
 }
@@ -1585,6 +1591,9 @@ write_unqualified_name (tree decl)
 	}
       else if (UDLIT_OPER_P (DECL_NAME (decl)))
 	write_literal_operator_name (DECL_NAME (decl));
+      else if (USER_OPER_P (DECL_NAME (decl)))
+	write_user_operator_name (DECL_NAME (decl),
+				  user_operator_arity (decl));
       else
 	found = false;
     }
@@ -1765,6 +1774,34 @@ equal_abi_tags (tree t1, tree t2, bool ignore_inherited_p)
 		TREE_STRING_POINTER (v2[i])) != 0)
       return false;
   return true;
+}
+
+/* Write a Unicode user-defined operator name (-funicode-operators) as an
+   Itanium vendor extended operator,
+
+     <operator-name> ::= v <digit> <source-name>
+
+   where <digit> is the operator's ARITY -- 1 prefix, 2 infix, counting a
+   member's implicit object parameter -- and the <source-name> is derived
+   from the operator's code point, never from a spelling: "op_u" followed
+   by the code point in uppercase hexadecimal, no U+ prefix, zero-padded to
+   at least four digits and widened as needed above the BMP.  So ⊞, U+229E,
+   binary, is v28op_u229E.  The derivation is injective because it is the
+   hex, padded only up to four digits.  This is the prototype's ABI
+   (unicode-operators.md section 9, mangling-derivation-rule); a
+   standardized feature would ask for a production of its own.  The symbol
+   is pure ASCII by construction, which every existing demangler renders.  */
+
+static void
+write_user_operator_name (tree identifier, unsigned arity)
+{
+  char buf[16];
+  snprintf (buf, sizeof buf, "op_u%04X",
+	    (unsigned) user_operator_code_point (identifier));
+  write_char ('v');
+  write_unsigned_number (arity);
+  write_unsigned_number (strlen (buf));
+  write_identifier (buf);
 }
 
 /* Write a user-defined literal operator.
@@ -3367,6 +3404,8 @@ write_member_name (tree member)
 	  if (abi_check (11))
 	    write_string ("on");
 	}
+      else if (USER_OPER_P (member))
+	write_string ("on");
       write_unqualified_id (member);
     }
   else if (DECL_P (member))
@@ -3721,7 +3760,7 @@ write_expression (tree expr)
       /* An operator name appearing as a dependent name needs to be
 	 specially marked to disambiguate between a use of the operator
 	 name and a use of the operator in an expression.  */
-      if (IDENTIFIER_ANY_OP_P (expr))
+      if (IDENTIFIER_ANY_OP_P (expr) || USER_OPER_P (expr))
 	write_string ("on");
       write_unqualified_id (expr);
     }
@@ -3732,10 +3771,21 @@ write_expression (tree expr)
       tree fn = TREE_OPERAND (expr, 0);
       if (!identifier_p (fn))
 	fn = OVL_NAME (fn);
-      if (IDENTIFIER_ANY_OP_P (fn))
+      if (IDENTIFIER_ANY_OP_P (fn) || USER_OPER_P (fn))
 	write_string ("on");
       write_unqualified_id (fn);
       write_template_args (TREE_OPERAND (expr, 1));
+    }
+  else if (code == USER_OPERATOR_EXPR)
+    {
+      /* A Unicode user-defined operator applied to dependent operands: the
+	 vendor extended operator name, then the operands, as for any
+	 <expression> built from an operator.  */
+      tree op2 = TREE_OPERAND (expr, 2);
+      write_user_operator_name (TREE_OPERAND (expr, 0), op2 ? 2 : 1);
+      write_expression (TREE_OPERAND (expr, 1));
+      if (op2)
+	write_expression (op2);
     }
   else if (TREE_CODE (expr) == MODOP_EXPR)
     {
@@ -4008,6 +4058,8 @@ write_expression (tree expr)
 	  if (abi_check (16))
 	    write_string ("on");
 	}
+      else if (USER_OPER_P (name))
+	write_string ("on");
       write_unqualified_id (name);
     }
   else
