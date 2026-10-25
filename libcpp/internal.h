@@ -905,6 +905,9 @@ extern bool _cpp_valid_utf8 (cpp_reader *pfile,
 			     int identifier_pos,
 			     struct normalize_state *nst,
 			     cppchar_t *cp);
+extern bool _cpp_lex_user_operator (cpp_reader *, cpp_token *,
+				    const unsigned char *);
+extern bool _cpp_user_operator_boundary_p (cppchar_t);
 
 extern void _cpp_destroy_iconv (cpp_reader *);
 extern unsigned char *_cpp_convert_input (cpp_reader *, const char *,

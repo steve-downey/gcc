@@ -270,6 +270,7 @@ po/$(PACKAGE).pot: $(libcpp_a_SOURCES)
 ETAGS = @ETAGS@
 
 TAGS_SOURCES = $(libcpp_a_SOURCES) internal.h system.h ucnid.h \
+	unicode-operators.h \
     include/cpplib.h include/line-map.h include/mkdeps.h include/symtab.h \
     include/rich-location.h include/label-text.h
 

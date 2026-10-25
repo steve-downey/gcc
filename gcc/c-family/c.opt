@@ -1776,6 +1776,10 @@ fbacktick
 C++ Var(flag_backtick) Init(0)
 Enable the backtick infix operator and keyword escaping.
 
+funicode-operators
+C++ Var(flag_unicode_operators) Init(0)
+Enable user-defined operators spelled with Unicode mathematical symbols.
+
 fchar8_t
 C++ ObjC++ Var(flag_char8_t) Init(-1)
 Enable the char8_t fundamental type and use it as the type for UTF-8 string

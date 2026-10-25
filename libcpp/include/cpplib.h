@@ -119,6 +119,8 @@ class rich_location;
 									\
   TK(NAME,		IDENT)	 /* word */				\
   TK(AT_NAME,		IDENT)	 /* @word - Objective-C */		\
+  TK(USER_OPERATOR,	IDENT)	 /* a Unicode user-defined operator,	\
+				    -funicode-operators */		\
   TK(NUMBER,		LITERAL) /* 34_be+ta  */			\
 									\
   TK(CHAR,		LITERAL) /* 'char' */				\
@@ -219,6 +221,9 @@ struct GTY(()) cpp_string {
 #define NO_EXPAND	(1 << 10) /* Do not macro-expand this token.  */
 #define PRAGMA_OP	(1 << 11) /* _Pragma token.  */
 #define BOL		(1 << 12) /* Token at beginning of line.  */
+#define EXCLUDED_UOP	(1 << 13) /* CPP_OTHER spelling a code point the
+				     lexer diagnosed as a named exclusion
+				     from the user-operator set.  */
 
 /* Specify which field, if any, of the cpp_token union is used.  */
 
@@ -464,6 +469,10 @@ struct cpp_options
 
   /* Nonzero means backtick is the infix-operator token CPP_BACKTICK.  */
   unsigned char backtick_is_operator;
+
+  /* Nonzero means a code point in the frozen Unicode user-operator set
+     (unicode-operators.h) lexes as the token CPP_USER_OPERATOR.  */
+  unsigned char unicode_operators;
 
   /* Nonzero means UCNs are accepted in identifiers.  */
   unsigned char extended_identifiers;
@@ -1498,6 +1507,30 @@ extern const unsigned char *cpp_alloc_token_string
   (cpp_reader *, const unsigned char *, unsigned);
 extern void cpp_output_token (const cpp_token *, FILE *);
 extern const char *cpp_type2name (enum cpp_ttype, unsigned char flags);
+
+/* Unicode user-defined operators (-funicode-operators).  The operator set
+   is a frozen enumeration of code points (unicode-operators.h); a code
+   point outside it that a reader might expect in it is a named exclusion,
+   and the class it was excluded under is what the lexer reports.  */
+enum cpp_user_operator_exclusion
+{
+  /* Not a named exclusion: a member of the set, or simply outside it.  */
+  CPP_UOP_NONE,
+  /* UAX #31 7.1's mathematical notation profile reserves it as an
+     identifier character.  */
+  CPP_UOP_IDENTIFIER_PROFILE,
+  /* Confusable with an existing token; rejected outright, never
+     aliased.  */
+  CPP_UOP_CONFUSABLE,
+  /* UAX #31 7.2's emoji profile carve-out.  */
+  CPP_UOP_EMOJI
+};
+extern bool cpp_user_operator_p (cppchar_t);
+extern enum cpp_user_operator_exclusion
+cpp_user_operator_exclusion (cppchar_t, const char **);
+extern bool cpp_excluded_user_operator_token_p (const cpp_token *);
+extern bool cpp_user_operator_code_point (const unsigned char *, size_t,
+					 cppchar_t *);
 /* Returns the value of an escape sequence, truncated to the correct
    target precision.  PSTR points to the input pointer, which is just
    after the backslash.  LIMIT is how much text we have.  WIDE is true

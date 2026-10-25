@@ -1872,6 +1872,21 @@ _cpp_valid_ucn (cpp_reader *pfile, const uchar **pstr,
     {
       int validity = ucn_valid_in_identifier (pfile, result, nst);
 
+      if (validity == 0
+	  && CPP_OPTION (pfile, unicode_operators)
+	  && _cpp_user_operator_boundary_p (result))
+	{
+	  /* A universal-character-name designating an operator code point,
+	     or a named exclusion, ends the identifier rather than being
+	     absorbed into it, exactly as the UTF-8 spelling does in
+	     _cpp_valid_utf8; the caller then lexes it as a token of its
+	     own.  Leave *PSTR where it was, after the backslash and the
+	     u, U or N, which is what forms_identifier_p undoes.  */
+	  *pstr = base + 2;
+	  *cp = result;
+	  return false;
+	}
+
       if (validity == 0)
 	cpp_error (pfile, CPP_DL_ERROR,
 		   "universal character %.*s is not valid in an identifier",
@@ -1997,6 +2012,19 @@ _cpp_valid_utf8 (cpp_reader *pfile,
 	     translation phase 1 (even though we don't physically do it that
 	     way).  In C, this byte rather becomes grammatically a separate
 	     token.  */
+
+	  /* Under -funicode-operators an operator code point, or a code
+	     point excluded from the operator set by name, ends the
+	     identifier rather than being absorbed into it: it will form a
+	     token of its own, so that a⊞b is three tokens and a−b says why
+	     U+2212 in particular is out.  Not an identifier character
+	     either way, so nothing well-formed changes.  */
+	  if (CPP_OPTION (pfile, unicode_operators)
+	      && _cpp_user_operator_boundary_p (*cp))
+	    {
+	      *pstr = base;
+	      return false;
+	    }
 
 	  if (CPP_OPTION (pfile, cplusplus))
 	    cpp_error (pfile, CPP_DL_ERROR,
@@ -3596,4 +3624,213 @@ cpp_is_printable_char (cppchar_t c)
 				     &is_printable[0],
 				     num_ranges,
 				     false);
+}
+
+/* Unicode user-defined operators (-funicode-operators).  The tables are
+   generated; see unicode-operators.h.  */
+
+#include "unicode-operators.h"
+
+/* True if C is a member of the frozen user-operator set.  A binary search
+   over the 32 ranges, as ucn_valid_in_identifier searches ucnid.h.  */
+
+bool
+cpp_user_operator_p (cppchar_t c)
+{
+  int mn = 0;
+  int mx = ARRAY_SIZE (user_operator_ranges) - 1;
+  if (c < user_operator_ranges[mn].first || c > user_operator_ranges[mx].last)
+    return false;
+  while (mn <= mx)
+    {
+      int md = (mn + mx) / 2;
+      if (c < user_operator_ranges[md].first)
+	mx = md - 1;
+      else if (c > user_operator_ranges[md].last)
+	mn = md + 1;
+      else
+	return true;
+    }
+  return false;
+}
+
+/* The class C was excluded from the user-operator set under, or
+   CPP_UOP_NONE if it is not a named exclusion.  For CPP_UOP_CONFUSABLE,
+   *CONFUSABLE is set to the ASCII token the code point apes.  The table is
+   tiny and sorted, so a linear scan that stops early beats a binary
+   search.  */
+
+enum cpp_user_operator_exclusion
+cpp_user_operator_exclusion (cppchar_t c, const char **confusable)
+{
+  if (confusable)
+    *confusable = NULL;
+  for (size_t i = 0; i < ARRAY_SIZE (user_operator_exclusions); i++)
+    {
+      if (user_operator_exclusions[i].code_point == c)
+	{
+	  if (confusable)
+	    *confusable = user_operator_exclusions[i].confusable;
+	  return user_operator_exclusions[i].reason;
+	}
+      if (user_operator_exclusions[i].code_point > c)
+	break;
+    }
+  return CPP_UOP_NONE;
+}
+
+/* True if C must end an identifier and form a token of its own under
+   -funicode-operators: a member of the operator set, or a code point
+   excluded from it as confusable or as emoji presentation.  The
+   identifier-profile exclusions (U+2202, U+2207, U+221E) are not
+   boundaries: UAX #31 cedes them to the identifier side, so they take
+   whatever path an identifier character takes.  */
+
+bool
+_cpp_user_operator_boundary_p (cppchar_t c)
+{
+  if (cpp_user_operator_p (c))
+    return true;
+  enum cpp_user_operator_exclusion r = cpp_user_operator_exclusion (c, NULL);
+  return r == CPP_UOP_CONFUSABLE || r == CPP_UOP_EMOJI;
+}
+
+/* Decode the single UTF-8 encoded character in the LEN bytes at TEXT into
+   *CP.  Returns false unless TEXT is exactly one validly encoded
+   character.  */
+
+bool
+cpp_user_operator_code_point (const unsigned char *text, size_t len,
+			      cppchar_t *cp)
+{
+  const uchar *p = text;
+  size_t left = len;
+  if (len == 0 || one_utf8_to_cppchar (&p, &left, cp) != 0)
+    return false;
+  return left == 0;
+}
+
+/* True if TOK is a CPP_OTHER token spelling a code point that the lexer
+   diagnosed as a named exclusion from the user-operator set, so that the
+   front end does not add its generic stray-character error to the one
+   already given.  */
+
+bool
+cpp_excluded_user_operator_token_p (const cpp_token *tok)
+{
+  return tok->type == CPP_OTHER && (tok->flags & EXCLUDED_UOP);
+}
+
+/* Under -funicode-operators, try to lex the extended character or
+   universal-character-name at BASE, which is pfile->buffer->cur, as a
+   user-defined operator.  The caller has already established that it does
+   not form an identifier.  On success RESULT is a CPP_USER_OPERATOR token
+   whose node is the canonical UTF-8 spelling of the code point -- the one
+   place a spelling becomes the operator's identity, so that `operator⊞',
+   `operator\u229E' and `operator\N{SQUARED PLUS}' are one entity -- and
+   whose spelling node is the text as written; buffer->cur is advanced and
+   true is returned.  A code point excluded from the set by name is
+   diagnosed here, where it is classified, and becomes one CPP_OTHER token
+   spanning its whole spelling, flagged EXCLUDED_UOP so that the front end
+   adds no stray-character error of its own; true is returned for it too.
+   Anything else returns false, with buffer->cur unchanged and no
+   diagnostic, so that the ordinary stray-character path forms the
+   token.  */
+
+bool
+_cpp_lex_user_operator (cpp_reader *pfile, cpp_token *result,
+			const uchar *base)
+{
+  cpp_buffer *buffer = pfile->buffer;
+  const uchar *cur = base;
+  cppchar_t c = 0;
+
+  if (*cur >= 0xC0)
+    {
+      if (!_cpp_valid_utf8 (pfile, &cur, buffer->rlimit, 0, NULL, &c))
+	return false;
+    }
+  else if (*cur == '\\'
+	   && (cur[1] == 'u' || cur[1] == 'U' || cur[1] == 'N'))
+    {
+      /* Only a syntactically complete UCN is tried, so that a stray
+	 backslash keeps the diagnostic it gets without the flag.  */
+      const uchar *p = cur + 2;
+      if (cur[1] == 'N')
+	{
+	  if (*p != '{')
+	    return false;
+	}
+      else if (*p == '{')
+	;
+      else
+	{
+	  unsigned n = cur[1] == 'u' ? 4 : 8;
+	  for (unsigned i = 0; i < n; i++)
+	    if (p + i >= buffer->rlimit || !ISXDIGIT (p[i]))
+	      return false;
+	}
+      cur += 2;
+      struct normalize_state nst = INITIAL_NORMALIZE_STATE;
+      if (!_cpp_valid_ucn (pfile, &cur, buffer->rlimit, 0, &nst, &c,
+			   NULL, NULL))
+	return false;
+    }
+  else
+    return false;
+
+  const char *confusable;
+  /* The diagnostic framework's %x takes no width, so the U+XXXX form is
+     preformatted; it is at least four digits, as in the mangled name.  */
+  char cpbuf[16];
+  snprintf (cpbuf, sizeof cpbuf, "U+%04X", (unsigned) c);
+  bool excluded = false;
+  switch (cpp_user_operator_exclusion (c, &confusable))
+    {
+    case CPP_UOP_CONFUSABLE:
+      cpp_error_with_line (pfile, CPP_DL_ERROR, result->src_loc, 0,
+			   "%.*s %s is not a user-defined operator: "
+			   "it is confusable with %<%s%>",
+			   (int) (cur - base), base, cpbuf, confusable);
+      excluded = true;
+      break;
+
+    case CPP_UOP_EMOJI:
+      cpp_error_with_line (pfile, CPP_DL_ERROR, result->src_loc, 0,
+			   "%.*s %s is not a user-defined operator: "
+			   "characters with emoji presentation are excluded "
+			   "from the operator set",
+			   (int) (cur - base), base, cpbuf);
+      excluded = true;
+      break;
+
+    case CPP_UOP_IDENTIFIER_PROFILE:
+    case CPP_UOP_NONE:
+      break;
+    }
+
+  if (excluded)
+    {
+      result->type = CPP_OTHER;
+      result->flags |= EXCLUDED_UOP;
+      result->val.str.len = cur - base;
+      result->val.str.text = cpp_alloc_token_string (pfile, base, cur - base);
+      buffer->cur = cur;
+      return true;
+    }
+
+  if (!cpp_user_operator_p (c))
+    return false;
+
+  uchar utf8[6];
+  uchar *up = utf8;
+  size_t left = sizeof (utf8);
+  if (one_cppchar_to_utf8 (c, &up, &left) != 0)
+    return false;
+
+  result->type = CPP_USER_OPERATOR;
+  result->val.node.node = cpp_lookup (pfile, utf8, sizeof (utf8) - left);
+  result->val.node.spelling = cpp_lookup (pfile, base, cur - base);
+  buffer->cur = cur;
+  return true;
 }

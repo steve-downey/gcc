@@ -4481,6 +4481,15 @@ _cpp_lex_direct (cpp_reader *pfile)
 	    break;
 	  }
 
+	/* A Unicode user-defined operator, under -funicode-operators: a
+	   code point in the frozen operator set, spelled as UTF-8 or as a
+	   universal-character-name, is a token of its own.  A named
+	   exclusion is diagnosed there and falls through to the
+	   stray-character path.  */
+	if (CPP_OPTION (pfile, unicode_operators)
+	    && _cpp_lex_user_operator (pfile, result, base))
+	  break;
+
 	/* Otherwise this will form a CPP_OTHER token.  Parse valid UTF-8 as a
 	   single token.  */
 	buffer->cur++;

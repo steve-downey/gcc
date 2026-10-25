@@ -607,6 +607,14 @@ c_lex_with_flags (tree *value, location_t *loc, unsigned char *cpp_flags,
       *value = HT_IDENT_TO_GCC_IDENT (HT_NODE (tok->val.node.node));
       break;
 
+    case CPP_USER_OPERATOR:
+      /* A Unicode user-defined operator (-funicode-operators).  The node
+	 is the canonical UTF-8 spelling of the operator's code point,
+	 whatever spelling the source used; the C++ parser forms the
+	 operator-function-id from it.  */
+      *value = HT_IDENT_TO_GCC_IDENT (HT_NODE (tok->val.node.node));
+      break;
+
     case CPP_NUMBER:
       {
 	const char *suffix = NULL;
@@ -731,6 +739,12 @@ c_lex_with_flags (tree *value, location_t *loc, unsigned char *cpp_flags,
 
 	if (c == '"' || c == '\'')
 	  error_at (*loc, "missing terminating %c character", (int) c);
+	else if (cpp_get_options (parse_in)->unicode_operators
+		 && cpp_excluded_user_operator_token_p (tok))
+	  /* The lexer has already said why this code point is not a
+	     user-defined operator; the generic stray-character error would
+	     add nothing.  */
+	  ;
 	else if (ISGRAPH (c))
 	  error_at (*loc, "stray %qc in program", (int) c);
 	else
